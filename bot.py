@@ -3,18 +3,18 @@ import talib
 import pandas as pd
 import numpy as np
 import time
-from datetime import datetime
 import os
+from datetime import datetime
 from dotenv import load_dotenv
 
 # Load .env file
 load_dotenv()
 
-# Binance API credentials
+# Binance Demo Trading configuration
 exchange = ccxt.binance({
     'apiKey': os.getenv('BINANCE_API_KEY'),
     'secret': os.getenv('BINANCE_SECRET'),
-    'sandbox': True,  # Testnet mode (live ဆို False)
+    'enableDemoTrading': True,  # Demo trading mode
     'enableRateLimit': True,
     'options': {
         'defaultType': 'future',  # Futures market
@@ -25,7 +25,8 @@ exchange = ccxt.binance({
 symbol = 'BTC/USDT'
 timeframe = '1m'
 leverage = 5
-amount_usdt = 100  # Position size in USDT (small စမ်းပါ)
+amount_usdt = 100  # Position size in USDT (small for testing)
+max_position_size = 0.05  # Max 5% of account balance
 
 # Mock news sentiment function (replace with real NewsAPI or NLP model)
 def get_news_sentiment():
@@ -35,13 +36,19 @@ def get_news_sentiment():
 
 # Fetch OHLCV data
 def fetch_ohlcv(symbol, timeframe, limit=100):
-    ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-    df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-    df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-    return df
+    """Fetch OHLCV data"""
+    try:
+        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
+        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
+        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
+        return df
+    except Exception as e:
+        print(f"Error fetching OHLCV: {e}")
+        return None
 
 # Calculate indicators
 def calculate_indicators(df):
+    """Calculate RSI, EMA, and ATR"""
     close = df['close'].values
     rsi = talib.RSI(close, timeperiod=14)
     ema_fast = talib.EMA(close, timeperiod=9)
@@ -56,50 +63,68 @@ def calculate_indicators(df):
 
 # Dynamic SL/TP based on volatility and sentiment
 def calculate_sl_tp(entry_price, atr, sentiment):
+    """Calculate dynamic stop-loss and take-profit"""
     volatility_factor = atr / entry_price
     base_sl = 0.02  # 2% base stop-loss
     base_tp = 0.04  # 4% base take-profit
-    # Adjust SL/TP based on sentiment and volatility
     sl_pct = base_sl * (1 + abs(sentiment) * 0.5) * (1 + volatility_factor)
     tp_pct = base_tp * (1 + abs(sentiment) * 0.5) * (1 + volatility_factor)
     return sl_pct, tp_pct
 
 # Get current position
 def get_position():
-    positions = exchange.fetch_positions([symbol])
-    for pos in positions:
-        if pos['symbol'] == symbol and float(pos['contracts']) != 0:
-            return pos
-    return None
+    """Check current position"""
+    try:
+        positions = exchange.fetch_positions([symbol])
+        for pos in positions:
+            if pos['symbol'] == symbol and float(pos['contracts']) != 0:
+                return pos
+        return None
+    except Exception as e:
+        print(f"Error fetching position: {e}")
+        return None
 
 # Open long position
 def open_long_position(amount_usdt, sl_pct, tp_pct):
-    ticker = exchange.fetch_ticker(symbol)
-    price = ticker['last']
-    amount = amount_usdt / price
-    order = exchange.create_market_buy_order(symbol, amount)
-    sl_price = price * (1 - sl_pct)
-    tp_price = price * (1 + tp_pct)
-    exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, None, {'stopPrice': sl_price})
-    exchange.create_limit_sell_order(symbol, amount, tp_price)
-    print(f"Long opened: {amount} {symbol} at {price}, SL: {sl_price}, TP: {tp_price}")
-    return order
+    """Open long position with SL/TP"""
+    try:
+        ticker = exchange.fetch_ticker(symbol)
+        price = ticker['last']
+        amount = amount_usdt / price
+        order = exchange.create_market_buy_order(symbol, amount)
+        sl_price = price * (1 - sl_pct)
+        tp_price = price * (1 + tp_pct)
+        exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, None, {'stopPrice': sl_price})
+        exchange.create_limit_sell_order(symbol, amount, tp_price)
+        print(f"Long opened: {amount} {symbol} at {price}, SL: {sl_price}, TP: {tp_price}")
+        return order
+    except Exception as e:
+        print(f"Error opening long position: {e}")
+        return None
 
 # Open short position
 def open_short_position(amount_usdt, sl_pct, tp_pct):
-    ticker = exchange.fetch_ticker(symbol)
-    price = ticker['last']
-    amount = amount_usdt / price
-    order = exchange.create_market_sell_order(symbol, amount)
-    sl_price = price * (1 + sl_pct)
-    tp_price = price * (1 - tp_pct)
-    exchange.create_stop_limit_order(symbol, 'buy', amount, sl_price, None, {'stopPrice': sl_price})
-    exchange.create_limit_buy_order(symbol, amount, tp_price)
-    print(f"Short opened: {amount} {symbol} at {price}, SL: {sl_price}, TP: {tp_price}")
-    return order
+    """Open short position with SL/TP"""
+    try:
+        ticker = exchange.fetch_ticker(symbol)
+        price = ticker['last']
+        amount = amount_usdt / price
+        order = exchange.create_market_sell_order(symbol, amount)
+        sl_price = price * (1 + sl_pct)
+        tp_price = price * (1 - tp_pct)
+        exchange.create_stop_limit_order(symbol, 'buy', amount, sl_price, None, {'stopPrice': sl_price})
+        exchange.create_limit_buy_order(symbol, amount, tp_price)
+        print(f"Short opened: {amount} {symbol} at {price}, SL: {sl_price}, TP: {tp_price}")
+        return order
+    except Exception as e:
+        print(f"Error opening short position: {e}")
+        return None
 
-# Main AI decision logic
+# AI decision logic
 def ai_decision(df, sentiment):
+    """AI decision based on indicators and sentiment"""
+    if df is None:
+        return None, None, None
     indicators = calculate_indicators(df)
     rsi, ema_crossover, ema_crossunder, atr = indicators['rsi'], indicators['ema_crossover'], indicators['ema_crossunder'], indicators['atr']
     
@@ -121,8 +146,14 @@ def ai_decision(df, sentiment):
         return 'short', sl_pct, tp_pct
     return None, None, None
 
-# Set leverage
-exchange.set_leverage(leverage, symbol)
+# Set leverage (with error handling)
+try:
+    exchange.set_leverage(leverage, symbol)
+    print(f"Leverage set to {leverage}x for {symbol}")
+except ccxt.base.errors.NotSupported:
+    print("Leverage setting not supported in demo mode, ensure leverage is set in Binance Demo UI")
+except Exception as e:
+    print(f"Error setting leverage: {e}")
 
 # Main loop
 print("AI Sniper Bot started... Press Ctrl+C to stop.")
@@ -144,6 +175,9 @@ while True:
                 print(f"No signal. RSI: {calculate_indicators(df)['rsi']:.2f}, Sentiment: {sentiment:.2f}")
         
         time.sleep(60)  # Check every 1 minute
+    except KeyboardInterrupt:
+        print("Bot stopped by user.")
+        break
     except Exception as e:
-        print(f"Error: {e}")
+        print(f"Error in main loop: {e}")
         time.sleep(60)
