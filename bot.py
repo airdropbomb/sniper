@@ -4,15 +4,20 @@ import pandas as pd
 import numpy as np
 import time
 from datetime import datetime
+import os
+from dotenv import load_dotenv
 
-# Binance API credentials (Testnet အတွက် sandbox=True)
+# Load .env file
+load_dotenv()
+
+# Binance API credentials
 exchange = ccxt.binance({
-    'apiKey': 'YOUR_API_KEY_HERE',  # သင့် API key
-    'secret': 'YOUR_SECRET_HERE',   # သင့် secret
-    'sandbox': True,                # Testnet mode (live ဆို False)
+    'apiKey': os.getenv('BINANCE_API_KEY'),
+    'secret': os.getenv('BINANCE_SECRET'),
+    'sandbox': True,  # Testnet mode (live ဆို False)
     'enableRateLimit': True,
     'options': {
-        'defaultType': 'future',    # Futures market
+        'defaultType': 'future',  # Futures market
     },
 })
 
