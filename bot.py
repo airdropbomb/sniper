@@ -36,10 +36,23 @@ leverage = 5
 amount_usdt = 100  # Position size in USDT (small for testing)
 max_position_size = 0.05  # Max 5% of account balance
 
+# Test API key validity
+def test_api_key():
+    try:
+        balance = exchange.fetch_balance()
+        logging.info(f"API key valid. Balance: {balance['total']}")
+        return True
+    except ccxt.AuthenticationError as e:
+        logging.error(f"Invalid API key: {e}")
+        print(f"Fatal error: Invalid API key. Please check .env file. Exiting...")
+        return False
+    except Exception as e:
+        logging.error(f"Error testing API key: {e}")
+        return False
+
 # Mock news sentiment function (replace with real NewsAPI or NLP model)
 def get_news_sentiment():
     """Mock sentiment score (-1 to 1)"""
-    # Real implementation: Use NewsAPI or scrape Twitter/X for sentiment
     sentiment = np.random.uniform(-1, 1)
     logging.info(f"Generated mock sentiment: {sentiment:.2f}")
     return sentiment
@@ -170,6 +183,10 @@ def ai_decision(df, sentiment):
     elif score < -0.5 and get_position() is None:
         return 'short', sl_pct, tp_pct
     return None, None, None
+
+# Test API key before starting
+if not test_api_key():
+    exit(1)
 
 # Set leverage (with error handling)
 try:
