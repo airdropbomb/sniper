@@ -218,7 +218,7 @@ class FullyAutonomousFutureTrader:
         precision_map = {
             "ETHUSDT": 3,   # 0.001 ETH
             "SOLUSDT": 1,   # 0.1 SOL
-            "ADAUSDT": 0,   # 1 ADA (whole numbers only) ⚠️ IMPORTANT
+            "ADAUSDT": 0,   # 1 ADA (whole numbers only)
             "XRPUSDT": 0,   # 1 XRP (whole numbers only)
         }
         
@@ -232,11 +232,13 @@ class FullyAutonomousFutureTrader:
         return quantity
 
     def execute_autonomous_trade(self, decision):
-        """Fixed version with proper precision handling"""
+        """Execute trade with ENTRY + TP/SL orders all at once"""
         try:
             pair = decision["pair"]
             direction = decision["direction"]
             entry_price = decision["entry_price"]
+            stop_loss = decision["stop_loss"]
+            take_profit = decision["take_profit"]
             
             # Get safe quantity with proper precision
             quantity = self.get_safe_quantity(pair, entry_price)
@@ -250,14 +252,16 @@ class FullyAutonomousFutureTrader:
             print(f"   Pair: {pair}")
             print(f"   Direction: {direction}")
             print(f"   Entry: ${entry_price}")
+            print(f"   Stop Loss: ${stop_loss}")
+            print(f"   Take Profit: ${take_profit}")
             print(f"   Quantity: {quantity}")
             print(f"   Size: ${self.trade_size_usd}")
             print(f"   Leverage: {self.leverage}x")
-            print(f"   Effective: ${self.trade_size_usd * self.leverage}")
-            print(f"   Notional: ${entry_price * quantity:.2f}")
+            print(f"   Risk/Reward: 1:{(take_profit-entry_price)/(entry_price-stop_loss):.2f}")
             
+            # 1. First, open the main position with LIMIT order
             if direction == "LONG":
-                order = self.binance.futures_create_order(
+                main_order = self.binance.futures_create_order(
                     symbol=pair,
                     side='BUY',
                     type='LIMIT',
@@ -265,8 +269,9 @@ class FullyAutonomousFutureTrader:
                     price=str(entry_price),
                     timeInForce='GTC'
                 )
+                print(f"✅ LIMIT BUY ORDER PLACED: {quantity} {pair} @ ${entry_price}")
             else:  # SHORT
-                order = self.binance.futures_create_order(
+                main_order = self.binance.futures_create_order(
                     symbol=pair,
                     side='SELL',
                     type='LIMIT',
@@ -274,110 +279,175 @@ class FullyAutonomousFutureTrader:
                     price=str(entry_price),
                     timeInForce='GTC'
                 )
+                print(f"✅ LIMIT SELL ORDER PLACED: {quantity} {pair} @ ${entry_price}")
+            
+            # 2. Immediately set STOP LOSS order
+            if direction == "LONG":
+                sl_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(stop_loss),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+                print(f"🛡️ STOP LOSS SET: SELL @ ${stop_loss}")
+            else:  # SHORT
+                sl_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(stop_loss),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+                print(f"🛡️ STOP LOSS SET: BUY @ ${stop_loss}")
+            
+            # 3. Immediately set TAKE PROFIT order
+            if direction == "LONG":
+                tp_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='TAKE_PROFIT_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(take_profit),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+                print(f"🎯 TAKE PROFIT SET: SELL @ ${take_profit}")
+            else:  # SHORT
+                tp_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='TAKE_PROFIT_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(take_profit),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+                print(f"🎯 TAKE PROFIT SET: BUY @ ${take_profit}")
             
             # Save trade info
             self.active_trade = {
                 "pair": pair,
                 "direction": direction,
                 "entry_price": entry_price,
-                "stop_loss": decision["stop_loss"],
-                "take_profit": decision["take_profit"],
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
                 "quantity": quantity,
-                "order_id": order['orderId'],
+                "main_order_id": main_order['orderId'],
+                "sl_order_id": sl_order['orderId'],
+                "tp_order_id": tp_order['orderId'],
                 "entry_time": time.time(),
                 "size_usd": self.trade_size_usd,
-                "leverage": self.leverage
+                "leverage": self.leverage,
+                "status": "PENDING"
             }
             
-            print(f"✅ TRADE EXECUTED: {direction} {pair}")
-            print(f"   SL: ${decision['stop_loss']}, TP: ${decision['take_profit']}")
+            print(f"✅ ALL ORDERS PLACED SUCCESSFULLY!")
+            print(f"   Waiting for entry order to fill...")
             print(f"   Reason: {decision['reason']}")
             
         except Exception as e:
-            print(f"❌ Trade failed: {e}")
-            # Debug info
-            print(f"   Debug - Pair: {pair}, Price: {entry_price}")
-            print(f"   Debug - Calculated Quantity: {self.trade_size_usd / entry_price}")
-    
+            print(f"❌ Trade execution failed: {e}")
+            # If any order fails, cancel all orders
+            try:
+                self.binance.futures_cancel_all_open_orders(symbol=pair)
+                print("🗑️ Cancelled all orders due to error")
+            except:
+                pass
+
     def check_autonomous_exit(self):
-        """Check and manage current trade"""
+        """Check if orders are filled or need management"""
         if not self.active_trade:
             return
             
         try:
             pair = self.active_trade["pair"]
             
-            # Get current price
-            ticker = self.binance.futures_symbol_ticker(symbol=pair)
-            current_price = float(ticker['price'])
-            
-            sl = self.active_trade["stop_loss"]
-            tp = self.active_trade["take_profit"]
-            
-            # Check exit conditions
-            exit_reason = None
-            
-            if self.active_trade["direction"] == "LONG":
-                if current_price <= sl:
-                    exit_reason = "STOP LOSS"
-                elif current_price >= tp:
-                    exit_reason = "TAKE PROFIT"
-            else:  # SHORT
-                if current_price >= sl:
-                    exit_reason = "STOP LOSS"
-                elif current_price <= tp:
-                    exit_reason = "TAKE PROFIT"
-            
-            if exit_reason:
-                self.close_autonomous_trade(exit_reason, current_price)
-                
-        except Exception as e:
-            print(f"❌ Exit check error: {e}")
-    
-    def close_autonomous_trade(self, reason, exit_price):
-        """Close trade and report results"""
-        try:
-            pair = self.active_trade["pair"]
-            direction = self.active_trade["direction"]
-            
-            # Close position
-            if direction == "LONG":
-                close_side = 'SELL'
-            else:
-                close_side = 'BUY'
-            
-            order = self.binance.futures_create_order(
+            # Check main order status
+            main_order = self.binance.futures_get_order(
                 symbol=pair,
-                side=close_side,
-                type='MARKET',
-                quantity=self.active_trade["quantity"]
+                orderId=self.active_trade["main_order_id"]
             )
             
-            # Calculate P&L
-            entry_price = self.active_trade["entry_price"]
-            quantity = self.active_trade["quantity"]
+            if main_order['status'] == 'FILLED':
+                if self.active_trade["status"] != "FILLED":
+                    print("💰 MAIN ORDER FILLED! Position is now active.")
+                    self.active_trade["status"] = "FILLED"
+                    
+                    # Check current position
+                    positions = self.binance.futures_position_information(symbol=pair)
+                    position = next((p for p in positions if float(p['positionAmt']) != 0), None)
+                    
+                    if position:
+                        print(f"📊 Position Active: {position['positionAmt']} {pair} @ ${position['entryPrice']}")
             
-            if direction == "LONG":
-                pnl = (exit_price - entry_price) * quantity
-            else:
-                pnl = (entry_price - exit_price) * quantity
+            elif main_order['status'] in ['CANCELED', 'EXPIRED']:
+                print("❌ MAIN ORDER CANCELLED/EXPIRED! Cleaning up...")
+                self.cancel_all_orders(pair)
+                self.active_trade = None
+                
+        except Exception as e:
+            print(f"❌ Order check error: {e}")
+
+    def cancel_all_orders(self, pair):
+        """Cancel all orders for a pair"""
+        try:
+            # Cancel all open orders for this pair
+            self.binance.futures_cancel_all_open_orders(symbol=pair)
+            print(f"🗑️ Cancelled all orders for {pair}")
+        except Exception as e:
+            print(f"❌ Cancel error: {e}")
+
+    def close_autonomous_trade(self, reason, exit_price):
+        """Close trade manually and cancel all orders"""
+        try:
+            pair = self.active_trade["pair"]
             
-            pnl_percent = (pnl / self.trade_size_usd) * 100
+            # 1. Cancel all open orders first
+            self.cancel_all_orders(pair)
             
-            print(f"🔚 TRADE CLOSED: {reason}")
-            print(f"   Exit Price: ${exit_price}")
-            print(f"   P&L: ${pnl:+.2f} ({pnl_percent:+.2f}%)")
-            print(f"   Leverage: {self.active_trade['leverage']}x")
+            # 2. Close position with market order if we have active position
+            positions = self.binance.futures_position_information(symbol=pair)
+            position = next((p for p in positions if float(p['positionAmt']) != 0), None)
             
-            # Duration
-            duration = time.time() - self.active_trade["entry_time"]
-            print(f"   Duration: {duration/60:.1f} minutes")
+            if position:
+                position_amt = float(position['positionAmt'])
+                if position_amt > 0:  # LONG position
+                    close_side = 'SELL'
+                else:  # SHORT position
+                    close_side = 'BUY'
+                    position_amt = abs(position_amt)
+                
+                order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side=close_side,
+                    type='MARKET',
+                    quantity=position_amt
+                )
+                
+                # Calculate P&L
+                entry_price = float(position['entryPrice'])
+                if close_side == 'SELL':
+                    pnl = (exit_price - entry_price) * position_amt
+                else:
+                    pnl = (entry_price - exit_price) * position_amt
+                
+                pnl_percent = (pnl / self.trade_size_usd) * 100
+                
+                print(f"🔚 TRADE CLOSED: {reason}")
+                print(f"   Exit Price: ${exit_price}")
+                print(f"   P&L: ${pnl:+.2f} ({pnl_percent:+.2f}%)")
+                print(f"   Leverage: {self.active_trade['leverage']}x")
             
             self.active_trade = None
             
         except Exception as e:
             print(f"❌ Close error: {e}")
-    
+
     def get_detailed_market_data(self):
         """Get comprehensive market data"""
         market_data = {}
