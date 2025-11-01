@@ -3,6 +3,7 @@ import requests
 import json
 import time
 import re
+import numpy as np  # ✅ ADD THIS LINE
 from binance.client import Client
 from dotenv import load_dotenv
 
@@ -17,9 +18,9 @@ class FullyAutonomousFutureTrader:
         self.deepseek_key = os.getenv('DEEPSEEK_API_KEY')
         
         # Trading parameters from .env
-        self.trade_size_usd = int(os.getenv('TRADE_SIZE', 100))  # Default 100 if not set
-        self.leverage = int(os.getenv('LEVERAGE', 3))  # Default 3x if not set
-        self.risk_percentage = float(os.getenv('RISK_PERCENTAGE', 1.0))  # Default 1%
+        self.trade_size_usd = int(os.getenv('TRADE_SIZE', 100))
+        self.leverage = int(os.getenv('LEVERAGE', 3))
+        self.risk_percentage = float(os.getenv('RISK_PERCENTAGE', 1.0))
         
         # Initialize Binance client
         self.binance = Client(self.binance_api_key, self.binance_secret)
@@ -348,14 +349,44 @@ class FullyAutonomousFutureTrader:
     
     def get_fallback_decision(self, market_data):
         """Fallback decision when API fails"""
-        # ... same fallback logic as before ...
+        for pair, data in market_data.items():
+            price = data['price']
+            change = data.get('change_24h', 0)
+            volume_ratio = data.get('volume_ratio', 1)
+            
+            # Simple trading logic
+            if change < -2 and volume_ratio > 1.2:
+                return {
+                    "action": "TRADE",
+                    "pair": pair,
+                    "direction": "LONG",
+                    "entry_price": round(price * 0.998, 4),
+                    "stop_loss": round(price * 0.98, 4),
+                    "take_profit": round(price * 1.02, 4),
+                    "position_size_usd": self.trade_size_usd,
+                    "confidence": 70,
+                    "reason": f"Fallback: {pair} oversold with high volume, potential bounce"
+                }
+            elif change > 2 and volume_ratio > 1.2:
+                return {
+                    "action": "TRADE",
+                    "pair": pair,
+                    "direction": "SHORT",
+                    "entry_price": round(price * 1.002, 4),
+                    "stop_loss": round(price * 1.02, 4),
+                    "take_profit": round(price * 0.98, 4),
+                    "position_size_usd": self.trade_size_usd,
+                    "confidence": 70,
+                    "reason": f"Fallback: {pair} overbought with high volume, potential pullback"
+                }
+        
         return {
-            "action": "SKIP", 
+            "action": "SKIP",
             "confidence": 50,
-            "reason": "Fallback: No clear signals"
+            "reason": "Fallback: No clear trading signals"
         }
 
-# 🚀 START BOT - No parameters needed, everything from .env
+# 🚀 START BOT
 if __name__ == "__main__":
     try:
         bot = FullyAutonomousFutureTrader()
