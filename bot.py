@@ -25,7 +25,7 @@ class FullyAutonomousFutureTrader:
         # Initialize Binance client
         self.binance = Client(self.binance_api_key, self.binance_secret)
         
-        self.available_pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"]
+        self.available_pairs = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"]
         self.active_trade = None
         
         # Validate that all required keys are present
@@ -168,64 +168,72 @@ class FullyAutonomousFutureTrader:
             return self.get_fallback_decision(market_data)
     
     def execute_autonomous_trade(self, decision):
-        """Execute trade with parameters from .env"""
-        try:
-            pair = decision["pair"]
-            direction = decision["direction"]
-            entry_price = decision["entry_price"]
-            
-            # Calculate quantity based on trade_size from .env
-            quantity = self.trade_size_usd / entry_price
-            quantity = round(quantity, 6)
-            
-            print(f"🔧 Trade Execution Details:")
-            print(f"   Pair: {pair}")
-            print(f"   Direction: {direction}")
-            print(f"   Entry: ${entry_price}")
-            print(f"   Quantity: {quantity}")
-            print(f"   Size: ${self.trade_size_usd}")
-            print(f"   Leverage: {self.leverage}x")
-            print(f"   Effective: ${self.trade_size_usd * self.leverage}")
-            
-            if direction == "LONG":
-                order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='BUY',
-                    type='LIMIT',
-                    quantity=quantity,
-                    price=str(entry_price),
-                    timeInForce='GTC'
-                )
-            else:  # SHORT
-                order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='SELL',
-                    type='LIMIT',
-                    quantity=quantity,
-                    price=str(entry_price),
-                    timeInForce='GTC'
-                )
-            
-            # Save trade info
-            self.active_trade = {
-                "pair": pair,
-                "direction": direction,
-                "entry_price": entry_price,
-                "stop_loss": decision["stop_loss"],
-                "take_profit": decision["take_profit"],
-                "quantity": quantity,
-                "order_id": order['orderId'],
-                "entry_time": time.time(),
-                "size_usd": self.trade_size_usd,
-                "leverage": self.leverage
-            }
-            
-            print(f"✅ TRADE EXECUTED: {direction} {pair}")
-            print(f"   SL: ${decision['stop_loss']}, TP: ${decision['take_profit']}")
-            print(f"   Reason: {decision['reason']}")
-            
-        except Exception as e:
-            print(f"❌ Trade failed: {e}")
+    """Fixed version with proper precision handling"""
+    try:
+        pair = decision["pair"]
+        direction = decision["direction"]
+        entry_price = decision["entry_price"]
+        
+        # Get safe quantity with proper precision
+        quantity = self.get_safe_quantity(pair, entry_price)
+        
+        # Final validation
+        if quantity <= 0:
+            print(f"❌ Invalid quantity: {quantity}")
+            return
+        
+        print(f"🔧 Trade Execution Details:")
+        print(f"   Pair: {pair}")
+        print(f"   Direction: {direction}")
+        print(f"   Entry: ${entry_price}")
+        print(f"   Quantity: {quantity}")
+        print(f"   Size: ${self.trade_size_usd}")
+        print(f"   Leverage: {self.leverage}x")
+        print(f"   Effective: ${self.trade_size_usd * self.leverage}")
+        print(f"   Notional: ${entry_price * quantity:.2f}")
+        
+        if direction == "LONG":
+            order = self.binance.futures_create_order(
+                symbol=pair,
+                side='BUY',
+                type='LIMIT',
+                quantity=quantity,
+                price=str(entry_price),
+                timeInForce='GTC'
+            )
+        else:  # SHORT
+            order = self.binance.futures_create_order(
+                symbol=pair,
+                side='SELL',
+                type='LIMIT',
+                quantity=quantity,
+                price=str(entry_price),
+                timeInForce='GTC'
+            )
+        
+        # Save trade info
+        self.active_trade = {
+            "pair": pair,
+            "direction": direction,
+            "entry_price": entry_price,
+            "stop_loss": decision["stop_loss"],
+            "take_profit": decision["take_profit"],
+            "quantity": quantity,
+            "order_id": order['orderId'],
+            "entry_time": time.time(),
+            "size_usd": self.trade_size_usd,
+            "leverage": self.leverage
+        }
+        
+        print(f"✅ TRADE EXECUTED: {direction} {pair}")
+        print(f"   SL: ${decision['stop_loss']}, TP: ${decision['take_profit']}")
+        print(f"   Reason: {decision['reason']}")
+        
+    except Exception as e:
+        print(f"❌ Trade failed: {e}")
+        # Debug info
+        print(f"   Debug - Pair: {pair}, Price: {entry_price}")
+        print(f"   Debug - Calculated Quantity: {self.trade_size_usd / entry_price}")
     
     def check_autonomous_exit(self):
         """Check and manage current trade"""
