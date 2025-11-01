@@ -10,7 +10,7 @@ from dotenv import load_dotenv
 # Load environment variables
 load_dotenv()
 
-class FullyAutonomousFutureTrader:
+class MultiPositionFutureTrader:
     def __init__(self):
         # Load config from .env file
         self.binance_api_key = os.getenv('BINANCE_API_KEY')
@@ -18,15 +18,17 @@ class FullyAutonomousFutureTrader:
         self.deepseek_key = os.getenv('DEEPSEEK_API_KEY')
         
         # Trading parameters from .env
-        self.trade_size_usd = int(os.getenv('TRADE_SIZE', 200))  # Increased to 200 for better precision
-        self.leverage = int(os.getenv('LEVERAGE', 10))  # Reduced to 10x for safety
+        self.trade_size_usd = int(os.getenv('TRADE_SIZE', 200))
+        self.leverage = int(os.getenv('LEVERAGE', 10))
         self.risk_percentage = float(os.getenv('RISK_PERCENTAGE', 1.0))
+        self.max_positions = int(os.getenv('MAX_POSITIONS', 3))  # Maximum concurrent positions
         
         # Initialize Binance client
         self.binance = Client(self.binance_api_key, self.binance_secret)
         
-        self.available_pairs = ["ETHUSDT", "SOLUSDT", "ADAUSDT"]  # Added BTC back
-        self.active_trade = None
+        self.available_pairs = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNB"]
+        self.active_trades = {}  # Dictionary to store multiple active trades
+        self.max_trades_per_pair = 1  # Only one trade per pair at a time
         
         # Validate that all required keys are present
         self.validate_config()
@@ -50,6 +52,8 @@ class FullyAutonomousFutureTrader:
         print(f"   Trade Size: ${self.trade_size_usd}")
         print(f"   Leverage: {self.leverage}x")
         print(f"   Risk: {self.risk_percentage}%")
+        print(f"   Max Positions: {self.max_positions}")
+        print(f"   Available Pairs: {', '.join(self.available_pairs)}")
     
     def setup_futures(self):
         """Setup futures trading with leverage from .env"""
@@ -67,34 +71,31 @@ class FullyAutonomousFutureTrader:
         except Exception as e:
             print(f"❌ Futures setup failed: {e}")
     
-    def run_fully_autonomous(self):
-        """Main trading loop"""
-        print("🚀 FULLY AUTONOMOUS FUTURES BOT STARTED!")
+    def run_multi_position_trading(self):
+        """Main trading loop for multiple positions"""
+        print("🚀 MULTI-POSITION FUTURES BOT STARTED!")
         print("⚙️  Configuration: .env file")
         print(f"💵 Trade Size: ${self.trade_size_usd}")
         print(f"📈 Leverage: {self.leverage}x")
         print(f"🎯 Risk: {self.risk_percentage}%")
+        print(f"📊 Max Positions: {self.max_positions}")
         
         while True:
             try:
-                # 1. Get market data
+                # 1. Get market data for all pairs
                 market_data = self.get_detailed_market_data()
                 
-                # 2. Get AI decision
-                decision = self.get_deepseek_autonomous_decision(market_data)
+                # 2. Get AI decisions for all pairs
+                decisions = self.get_multi_pair_decisions(market_data)
                 
-                # 3. Execute trade
-                if decision["action"] == "TRADE" and decision["confidence"] >= 70:
-                    if not self.active_trade:
-                        print(f"🎯 EXECUTING: {decision['pair']} {decision['direction']}")
-                        self.execute_autonomous_trade(decision)
-                    else:
-                        print("⏳ Trade active, waiting...")
-                else:
-                    print(f"⏸️ WAITING: {decision['reason']}")
+                # 3. Execute trades for each pair
+                self.execute_multi_trades(decisions, market_data)
                 
-                # 4. Check current trade
-                self.check_autonomous_exit()
+                # 4. Check and manage all active trades
+                self.check_all_active_trades()
+                
+                # 5. Display portfolio status
+                self.display_portfolio_status()
                 
                 time.sleep(300)  # 5 minutes
                 
@@ -102,71 +103,267 @@ class FullyAutonomousFutureTrader:
                 print(f"❌ Error: {e}")
                 time.sleep(60)
     
-    def get_deepseek_autonomous_decision(self, market_data):
-        """DeepSeek AI decision with dynamic trade size"""
+    def get_multi_pair_decisions(self, market_data):
+        """Get trading decisions for multiple pairs"""
+        decisions = {}
         
-        prompt = f"""
-        AUTONOMOUS TRADING ANALYSIS:
+        for pair in self.available_pairs:
+            # Skip if we already have an active trade for this pair
+            if pair in self.active_trades:
+                decisions[pair] = {"action": "SKIP", "reason": f"Active trade exists for {pair}"}
+                continue
+            
+            # Get individual decision for each pair
+            pair_market_data = {pair: market_data[pair]}
+            decision = self.get_deepseek_autonomous_decision(pair_market_data)
+            decisions[pair] = decision
         
-        CONFIGURATION:
-        - Trade Size: ${self.trade_size_usd}
-        - Leverage: {self.leverage}x
-        - Risk: {self.risk_percentage}%
-        - Available Pairs: {self.available_pairs}
+        return decisions
+    
+    def execute_multi_trades(self, decisions, market_data):
+        """Execute trades for multiple pairs based on decisions"""
+        current_positions = len(self.active_trades)
+        available_slots = self.max_positions - current_positions
         
-        MARKET DATA: {json.dumps(market_data, indent=2)}
+        print(f"📊 Trading Status: {current_positions}/{self.max_positions} positions active")
         
-        YOUR TASK: Analyze and make trading decisions based on the above configuration.
+        if available_slots <= 0:
+            print("⏸️ Maximum positions reached, waiting for slots...")
+            return
         
-        RESPONSE (JSON):
-        {{
-            "action": "TRADE/SKIP",
-            "pair": "SYMBOL",
-            "direction": "LONG/SHORT",
-            "entry_price": number,
-            "stop_loss": number,
-            "take_profit": number,
-            "position_size_usd": {self.trade_size_usd},
-            "confidence": 0-100,
-            "reason": "Detailed technical analysis..."
-        }}
-        """
+        executed_trades = 0
         
-        headers = {
-            "Authorization": f"Bearer {self.deepseek_key}",
-            "Content-Type": "application/json"
-        }
-        
-        payload = {
-            "model": "deepseek-chat",
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.1,
-            "max_tokens": 1000
-        }
-        
+        for pair, decision in decisions.items():
+            if executed_trades >= available_slots:
+                break
+                
+            if decision["action"] == "TRADE" and decision["confidence"] >= 70:
+                if pair not in self.active_trades:
+                    print(f"🎯 EXECUTING: {decision['pair']} {decision['direction']}")
+                    success = self.execute_autonomous_trade(decision)
+                    if success:
+                        executed_trades += 1
+                        print(f"✅ Trade executed for {pair} ({executed_trades}/{available_slots} slots used)")
+    
+    def execute_autonomous_trade(self, decision):
+        """Execute trade for a single pair - returns True if successful"""
         try:
-            response = requests.post(
-                "https://api.deepseek.com/v1/chat/completions",
-                headers=headers,
-                json=payload,
-                timeout=30
-            )
+            pair = decision["pair"]
+            direction = decision["direction"]
+            suggested_price = decision["entry_price"]
+            stop_loss = decision["stop_loss"]
+            take_profit = decision["take_profit"]
             
-            if response.status_code == 200:
-                result = response.json()
-                content = result['choices'][0]['message']['content']
-                
-                json_match = re.search(r'\{.*\}', content, re.DOTALL)
-                if json_match:
-                    return json.loads(json_match.group())
+            # Get current market price for accurate quantity calculation
+            ticker = self.binance.futures_symbol_ticker(symbol=pair)
+            current_market_price = float(ticker['price'])
             
-            print("❌ API failed, using simulation")
-            return self.get_fallback_decision(market_data)
-                
+            print(f"🔧 Setting up trade for {pair}:")
+            print(f"   Direction: {direction}")
+            print(f"   Trade Size: ${self.trade_size_usd}")
+            print(f"   Market Price: ${current_market_price}")
+            
+            # Get safe quantity with proper precision
+            quantity = self.get_safe_quantity(pair, current_market_price)
+            
+            if not quantity or quantity <= 0:
+                print(f"❌ Invalid quantity calculation for {pair}")
+                return False
+            
+            # 1. MARKET ENTRY - Immediate execution
+            print(f"📥 Placing MARKET entry order for {pair}...")
+            if direction == "LONG":
+                entry_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='MARKET',
+                    quantity=quantity
+                )
+                actual_entry_price = float(entry_order['avgPrice'])
+                print(f"✅ MARKET BUY EXECUTED: {quantity} {pair} @ ${actual_entry_price}")
+            else:  # SHORT
+                entry_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='MARKET',
+                    quantity=quantity
+                )
+                actual_entry_price = float(entry_order['avgPrice'])
+                print(f"✅ MARKET SELL EXECUTED: {quantity} {pair} @ ${actual_entry_price}")
+            
+            # Wait for position to open
+            time.sleep(2)
+            
+            # 2. STOP LOSS
+            print(f"🛡️ Placing STOP LOSS for {pair}...")
+            if direction == "LONG":
+                sl_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(round(stop_loss, 2)),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+            else:  # SHORT
+                sl_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(round(stop_loss, 2)),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+            
+            # 3. TAKE PROFIT
+            print(f"🎯 Placing TAKE PROFIT for {pair}...")
+            if direction == "LONG":
+                tp_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='LIMIT',
+                    quantity=quantity,
+                    price=str(round(take_profit, 2)),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+            else:  # SHORT
+                tp_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='LIMIT',
+                    quantity=quantity,
+                    price=str(round(take_profit, 2)),
+                    timeInForce='GTC',
+                    reduceOnly=True
+                )
+            
+            # Save trade info
+            self.active_trades[pair] = {
+                "pair": pair,
+                "direction": direction,
+                "entry_price": actual_entry_price,
+                "stop_loss": stop_loss,
+                "take_profit": take_profit,
+                "quantity": quantity,
+                "sl_order_id": sl_order['orderId'],
+                "tp_order_id": tp_order['orderId'],
+                "entry_time": time.time(),
+                "size_usd": self.trade_size_usd,
+                "leverage": self.leverage,
+                "status": "ACTIVE",
+                "reason": decision["reason"]
+            }
+            
+            print(f"🎉 TRADE EXECUTED SUCCESSFULLY for {pair}!")
+            print(f"   Entry: ${actual_entry_price}")
+            print(f"   Stop Loss: ${stop_loss}")
+            print(f"   Take Profit: ${take_profit}")
+            
+            return True
+            
         except Exception as e:
-            print(f"❌ API error: {e}")
-            return self.get_fallback_decision(market_data)
+            print(f"❌ Trade execution failed for {pair}: {e}")
+            # Try to emergency close if position was opened
+            try:
+                if 'entry_order' in locals():
+                    self.emergency_close_position(pair, direction, quantity)
+            except:
+                pass
+            return False
 
+    def check_all_active_trades(self):
+        """Check and manage all active trades"""
+        pairs_to_remove = []
+        
+        for pair, trade_info in self.active_trades.items():
+            try:
+                # Check if position still exists
+                positions = self.binance.futures_position_information(symbol=pair)
+                position = next((p for p in positions if float(p['positionAmt']) != 0), None)
+                
+                if not position:
+                    print(f"💰 POSITION CLOSED for {pair}! Removing from active trades.")
+                    pairs_to_remove.append(pair)
+                    continue
+                
+                # Check TP/SL orders status
+                try:
+                    tp_order = self.binance.futures_get_order(
+                        symbol=pair,
+                        orderId=trade_info["tp_order_id"]
+                    )
+                    sl_order = self.binance.futures_get_order(
+                        symbol=pair,
+                        orderId=trade_info["sl_order_id"]
+                    )
+                    
+                    if tp_order['status'] == 'FILLED':
+                        print(f"🎯 TAKE PROFIT HIT for {pair}! Trade completed.")
+                        pairs_to_remove.append(pair)
+                    elif sl_order['status'] == 'FILLED':
+                        print(f"🛡️ STOP LOSS HIT for {pair}! Trade closed.")
+                        pairs_to_remove.append(pair)
+                        
+                except Exception as e:
+                    # Orders might be cancelled or modified
+                    pass
+                    
+            except Exception as e:
+                print(f"❌ Error checking trade for {pair}: {e}")
+        
+        # Remove completed trades
+        for pair in pairs_to_remove:
+            if pair in self.active_trades:
+                del self.active_trades[pair]
+    
+    def display_portfolio_status(self):
+        """Display current portfolio status"""
+        if not self.active_trades:
+            print("📊 Portfolio: No active positions")
+            return
+        
+        print(f"📊 PORTFOLIO STATUS: {len(self.active_trades)} active positions")
+        print("-" * 50)
+        
+        total_invested = 0
+        total_unrealized_pnl = 0
+        
+        for pair, trade in self.active_trades.items():
+            try:
+                positions = self.binance.futures_position_information(symbol=pair)
+                position = next((p for p in positions if float(p['positionAmt']) != 0), None)
+                
+                if position:
+                    unrealized_pnl = float(position['unRealizedProfit'])
+                    current_price = float(position['markPrice'])
+                    
+                    total_invested += trade['size_usd']
+                    total_unrealized_pnl += unrealized_pnl
+                    
+                    pnl_percent = (unrealized_pnl / trade['size_usd']) * 100
+                    pnl_emoji = "🟢" if unrealized_pnl > 0 else "🔴" if unrealized_pnl < 0 else "⚪"
+                    
+                    print(f"{pnl_emoji} {pair} {trade['direction']}: "
+                          f"Entry ${trade['entry_price']} | "
+                          f"Current ${current_price} | "
+                          f"P&L ${unrealized_pnl:+.2f} ({pnl_percent:+.1f}%)")
+            
+            except Exception as e:
+                print(f"❌ Error getting position info for {pair}: {e}")
+        
+        if total_invested > 0:
+            total_pnl_percent = (total_unrealized_pnl / total_invested) * 100
+            total_emoji = "🟢" if total_unrealized_pnl > 0 else "🔴" if total_unrealized_pnl < 0 else "⚪"
+            print("-" * 50)
+            print(f"{total_emoji} TOTAL: Invested ${total_invested} | "
+                  f"P&L ${total_unrealized_pnl:+.2f} ({total_pnl_percent:+.1f}%)")
+    
+    # Keep all the helper methods from previous code (get_safe_quantity, get_step_precision, etc.)
+    # ... [All the helper methods remain the same] ...
+    
     def get_safe_quantity(self, pair, entry_price):
         """Safe quantity calculation with proper precision handling"""
         try:
@@ -195,24 +392,16 @@ class FullyAutonomousFutureTrader:
                     quantity = (quantity // step_size) * step_size
                     quantity = round(quantity, precision)
                     
-                    print(f"🔧 Quantity Calculation:")
-                    print(f"   Raw: {raw_quantity:.6f}")
-                    print(f"   MinQty: {min_qty}")
-                    print(f"   MaxQty: {max_qty}")
-                    print(f"   StepSize: {step_size}") 
-                    print(f"   Precision: {precision} decimals")
-                    print(f"   Final Quantity: {quantity}")
-                    
                     # Final validation
                     notional_value = entry_price * quantity
                     if notional_value < 10:  # Binance minimum notional
-                        print(f"⚠️ Notional too low: ${notional_value:.2f}")
+                        print(f"⚠️ Notional too low for {pair}: ${notional_value:.2f}")
                         return None
                     
                     return quantity
                     
         except Exception as e:
-            print(f"⚠️ Precision error: {e}")
+            print(f"⚠️ Precision error for {pair}: {e}")
         
         # Fallback to manual precision
         return self.apply_pair_precision(pair, self.trade_size_usd / entry_price)
@@ -229,7 +418,7 @@ class FullyAutonomousFutureTrader:
                 return 0
 
     def apply_pair_precision(self, pair, quantity):
-        """Apply pair-specific quantity precision with proper validation"""
+        """Apply pair-specific quantity precision"""
         precision_map = {
             "BTCUSDT": 3,   # 0.001 BTC
             "ETHUSDT": 3,   # 0.001 ETH
@@ -238,252 +427,41 @@ class FullyAutonomousFutureTrader:
         }
         
         min_quantities = {
-            "BTCUSDT": 0.001,   # Minimum 0.001 BTC
-            "ETHUSDT": 0.001,   # Minimum 0.001 ETH
-            "SOLUSDT": 0.1,     # Minimum 0.1 SOL
-            "ADAUSDT": 1.0,     # Minimum 1 ADA
+            "BTCUSDT": 0.001,
+            "ETHUSDT": 0.001,
+            "SOLUSDT": 0.1,
+            "ADAUSDT": 1.0,
         }
         
         precision = precision_map.get(pair, 3)
         min_qty = min_quantities.get(pair, 0.001)
         
-        # Ensure minimum quantity
         quantity = max(quantity, min_qty)
         
-        # Apply precision
         if precision == 0:
-            quantity = int(quantity)  # Whole numbers for ADA
+            quantity = int(quantity)
         else:
             quantity = round(quantity, precision)
         
-        print(f"🔧 Fallback Quantity: {quantity} (Precision: {precision})")
         return quantity
 
-    def execute_autonomous_trade(self, decision):
-        """Execute trade with MARKET ENTRY + LIMIT TP/SL - FIXED PRECISION"""
-        try:
-            pair = decision["pair"]
-            direction = decision["direction"]
-            suggested_price = decision["entry_price"]
-            stop_loss = decision["stop_loss"]
-            take_profit = decision["take_profit"]
-            
-            # Get current market price for accurate quantity calculation
-            ticker = self.binance.futures_symbol_ticker(symbol=pair)
-            current_market_price = float(ticker['price'])
-            
-            print(f"🔧 Initial Setup:")
-            print(f"   Pair: {pair}")
-            print(f"   Direction: {direction}")
-            print(f"   Trade Size: ${self.trade_size_usd}")
-            print(f"   Market Price: ${current_market_price}")
-            print(f"   Stop Loss: ${stop_loss}")
-            print(f"   Take Profit: ${take_profit}")
-            
-            # Get safe quantity with proper precision
-            quantity = self.get_safe_quantity(pair, current_market_price)
-            
-            if not quantity or quantity <= 0:
-                print(f"❌ Invalid quantity calculation")
-                return
-            
-            # Final notional validation
-            notional_value = current_market_price * quantity
-            print(f"🔧 Final Check:")
-            print(f"   Quantity: {quantity}")
-            print(f"   Notional Value: ${notional_value:.2f}")
-            print(f"   Leverage: {self.leverage}x")
-            print(f"   Effective: ${notional_value * self.leverage:.2f}")
-            
-            # 1. MARKET ENTRY - Immediate execution
-            print("📥 Placing MARKET entry order...")
-            if direction == "LONG":
-                entry_order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='BUY',
-                    type='MARKET',
-                    quantity=quantity
-                )
-                actual_entry_price = float(entry_order['avgPrice'])
-                print(f"✅ MARKET BUY EXECUTED: {quantity} {pair} @ ${actual_entry_price}")
-            else:  # SHORT
-                entry_order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='SELL',
-                    type='MARKET',
-                    quantity=quantity
-                )
-                actual_entry_price = float(entry_order['avgPrice'])
-                print(f"✅ MARKET SELL EXECUTED: {quantity} {pair} @ ${actual_entry_price}")
-            
-            # Wait for position to open
-            print("⏳ Waiting for position to open...")
-            time.sleep(3)
-            
-            # 2. STOP LOSS with STOP_MARKET (most reliable)
-            print("🛡️ Placing STOP LOSS order...")
-            if direction == "LONG":
-                sl_order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='SELL',
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=str(round(stop_loss, 2)),  # Rounded to 2 decimals
-                    timeInForce='GTC',
-                    reduceOnly=True
-                )
-                print(f"✅ STOP LOSS SET: SELL @ ${stop_loss}")
-            else:  # SHORT
-                sl_order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='BUY',
-                    type='STOP_MARKET',
-                    quantity=quantity,
-                    stopPrice=str(round(stop_loss, 2)),  # Rounded to 2 decimals
-                    timeInForce='GTC',
-                    reduceOnly=True
-                )
-                print(f"✅ STOP LOSS SET: BUY @ ${stop_loss}")
-            
-            # 3. TAKE PROFIT with LIMIT order
-            print("🎯 Placing TAKE PROFIT order...")
-            if direction == "LONG":
-                tp_order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='SELL',
-                    type='LIMIT',
-                    quantity=quantity,
-                    price=str(round(take_profit, 2)),  # Rounded to 2 decimals
-                    timeInForce='GTC',
-                    reduceOnly=True
-                )
-                print(f"✅ TAKE PROFIT SET: SELL @ ${take_profit}")
-            else:  # SHORT
-                tp_order = self.binance.futures_create_order(
-                    symbol=pair,
-                    side='BUY',
-                    type='LIMIT',
-                    quantity=quantity,
-                    price=str(round(take_profit, 2)),  # Rounded to 2 decimals
-                    timeInForce='GTC',
-                    reduceOnly=True
-                )
-                print(f"✅ TAKE PROFIT SET: BUY @ ${take_profit}")
-            
-            # Save trade info
-            self.active_trade = {
-                "pair": pair,
-                "direction": direction,
-                "entry_price": actual_entry_price,
-                "stop_loss": stop_loss,
-                "take_profit": take_profit,
-                "quantity": quantity,
-                "sl_order_id": sl_order['orderId'],
-                "tp_order_id": tp_order['orderId'],
-                "entry_time": time.time(),
-                "size_usd": self.trade_size_usd,
-                "leverage": self.leverage,
-                "status": "ACTIVE"
-            }
-            
-            print(f"🎉 ALL ORDERS EXECUTED SUCCESSFULLY!")
-            print(f"📊 Position Summary:")
-            print(f"   Pair: {pair} {direction}")
-            print(f"   Entry: ${actual_entry_price}")
-            print(f"   Quantity: {quantity}")
-            print(f"   Stop Loss: ${stop_loss}")
-            print(f"   Take Profit: ${take_profit}")
-            print(f"   Reason: {decision['reason']}")
-            
-        except Exception as e:
-            print(f"❌ Trade execution failed: {e}")
-            # Try to emergency close if position was opened
-            try:
-                if 'entry_order' in locals():
-                    self.emergency_close_position(pair, direction, quantity)
-            except Exception as close_error:
-                print(f"❌ Emergency close also failed: {close_error}")
-
     def emergency_close_position(self, pair, direction, quantity):
-        """Emergency close position if something goes wrong"""
+        """Emergency close position"""
         try:
-            print(f"🚨 Attempting emergency position close...")
             if direction == "LONG":
                 close_side = 'SELL'
             else:
                 close_side = 'BUY'
             
-            close_order = self.binance.futures_create_order(
+            self.binance.futures_create_order(
                 symbol=pair,
                 side=close_side,
                 type='MARKET',
                 quantity=quantity
             )
-            print(f"✅ EMERGENCY POSITION CLOSED: {quantity} {pair}")
+            print(f"🚨 EMERGENCY POSITION CLOSED for {pair}")
         except Exception as e:
-            print(f"❌ Emergency close failed: {e}")
-
-    def check_autonomous_exit(self):
-        """Check if orders are filled or need management"""
-        if not self.active_trade:
-            return
-            
-        try:
-            pair = self.active_trade["pair"]
-            
-            # Check if we still have an active position
-            positions = self.binance.futures_position_information(symbol=pair)
-            position = next((p for p in positions if float(p['positionAmt']) != 0), None)
-            
-            if not position:
-                print("💰 POSITION CLOSED! Trade completed.")
-                self.active_trade = None
-                return
-            
-            # Check current position info
-            position_amt = float(position['positionAmt'])
-            entry_price = float(position['entryPrice'])
-            current_price = float(position['markPrice'])
-            
-            unrealized_pnl = float(position['unRealizedProfit'])
-            
-            print(f"📊 Position Update:")
-            print(f"   {pair}: {position_amt} @ ${entry_price}")
-            print(f"   Current Price: ${current_price}")
-            print(f"   Unrealized P&L: ${unrealized_pnl:.2f}")
-            
-            # Check TP/SL orders status
-            try:
-                tp_order = self.binance.futures_get_order(
-                    symbol=pair,
-                    orderId=self.active_trade["tp_order_id"]
-                )
-                sl_order = self.binance.futures_get_order(
-                    symbol=pair,
-                    orderId=self.active_trade["sl_order_id"]
-                )
-                
-                if tp_order['status'] == 'FILLED':
-                    print("🎯 TAKE PROFIT HIT! Trade completed successfully.")
-                    self.active_trade = None
-                elif sl_order['status'] == 'FILLED':
-                    print("🛡️ STOP LOSS HIT! Trade closed.")
-                    self.active_trade = None
-                    
-            except Exception as e:
-                # Orders might be cancelled or modified, just continue monitoring
-                pass
-                
-        except Exception as e:
-            print(f"❌ Position check error: {e}")
-
-    def cancel_all_orders(self, pair):
-        """Cancel all orders for a pair"""
-        try:
-            self.binance.futures_cancel_all_open_orders(symbol=pair)
-            print(f"🗑️ Cancelled all orders for {pair}")
-        except Exception as e:
-            print(f"❌ Cancel error: {e}")
+            print(f"❌ Emergency close failed for {pair}: {e}")
 
     def get_detailed_market_data(self):
         """Get comprehensive market data"""
@@ -491,11 +469,9 @@ class FullyAutonomousFutureTrader:
         
         for pair in self.available_pairs:
             try:
-                # Current price
                 ticker = self.binance.futures_symbol_ticker(symbol=pair)
                 price = float(ticker['price'])
                 
-                # Historical data
                 klines = self.binance.futures_klines(
                     symbol=pair,
                     interval=Client.KLINE_INTERVAL_15MINUTE,
@@ -507,7 +483,6 @@ class FullyAutonomousFutureTrader:
                 lows = [float(k[3]) for k in klines]
                 volumes = [float(k[5]) for k in klines]
                 
-                # Basic indicators
                 current_volume = volumes[-1] if volumes else 0
                 avg_volume = np.mean(volumes[-10:]) if len(volumes) >= 10 else current_volume
                 
@@ -525,52 +500,115 @@ class FullyAutonomousFutureTrader:
                 continue
                 
         return market_data
-    
+
+    def get_deepseek_autonomous_decision(self, market_data):
+        """DeepSeek AI decision for individual pair"""
+        pair = list(market_data.keys())[0]  # Get the single pair
+        
+        prompt = f"""
+        AUTONOMOUS TRADING ANALYSIS FOR {pair}:
+        
+        CONFIGURATION:
+        - Trade Size: ${self.trade_size_usd}
+        - Leverage: {self.leverage}x
+        - Risk: {self.risk_percentage}%
+        
+        MARKET DATA: {json.dumps(market_data, indent=2)}
+        
+        Analyze ONLY {pair} and provide trading decision.
+        
+        RESPONSE (JSON):
+        {{
+            "action": "TRADE/SKIP",
+            "pair": "{pair}",
+            "direction": "LONG/SHORT",
+            "entry_price": number,
+            "stop_loss": number,
+            "take_profit": number,
+            "position_size_usd": {self.trade_size_usd},
+            "confidence": 0-100,
+            "reason": "Technical analysis for {pair}..."
+        }}
+        """
+        
+        headers = {
+            "Authorization": f"Bearer {self.deepseek_key}",
+            "Content-Type": "application/json"
+        }
+        
+        payload = {
+            "model": "deepseek-chat",
+            "messages": [{"role": "user", "content": prompt}],
+            "temperature": 0.1,
+            "max_tokens": 800
+        }
+        
+        try:
+            response = requests.post(
+                "https://api.deepseek.com/v1/chat/completions",
+                headers=headers,
+                json=payload,
+                timeout=30
+            )
+            
+            if response.status_code == 200:
+                result = response.json()
+                content = result['choices'][0]['message']['content']
+                
+                json_match = re.search(r'\{.*\}', content, re.DOTALL)
+                if json_match:
+                    return json.loads(json_match.group())
+            
+            return self.get_fallback_decision(market_data)
+                
+        except Exception as e:
+            print(f"❌ API error for {pair}: {e}")
+            return self.get_fallback_decision(market_data)
+
     def get_fallback_decision(self, market_data):
         """Fallback decision when API fails"""
-        for pair, data in market_data.items():
-            price = data['price']
-            change = data.get('change_24h', 0)
-            volume_ratio = data.get('volume_ratio', 1)
-            
-            # Simple trading logic - prefer BTC and ETH for better precision
-            if pair in ["BTCUSDT", "ETHUSDT"] and abs(change) > 1.5 and volume_ratio > 1.1:
-                if change < -1.5:
-                    return {
-                        "action": "TRADE",
-                        "pair": pair,
-                        "direction": "LONG",
-                        "entry_price": price,
-                        "stop_loss": round(price * 0.99, 2),
-                        "take_profit": round(price * 1.015, 2),
-                        "position_size_usd": self.trade_size_usd,
-                        "confidence": 70,
-                        "reason": f"Fallback: {pair} showing reversal signals"
-                    }
-                else:
-                    return {
-                        "action": "TRADE",
-                        "pair": pair,
-                        "direction": "SHORT",
-                        "entry_price": price,
-                        "stop_loss": round(price * 1.01, 2),
-                        "take_profit": round(price * 0.985, 2),
-                        "position_size_usd": self.trade_size_usd,
-                        "confidence": 70,
-                        "reason": f"Fallback: {pair} showing pullback signals"
-                    }
+        pair = list(market_data.keys())[0]
+        data = market_data[pair]
+        price = data['price']
+        change = data.get('change_24h', 0)
+        volume_ratio = data.get('volume_ratio', 1)
+        
+        if abs(change) > 1.5 and volume_ratio > 1.1:
+            if change < -1.5:
+                return {
+                    "action": "TRADE",
+                    "pair": pair,
+                    "direction": "LONG",
+                    "entry_price": price,
+                    "stop_loss": round(price * 0.99, 2),
+                    "take_profit": round(price * 1.015, 2),
+                    "position_size_usd": self.trade_size_usd,
+                    "confidence": 70,
+                    "reason": f"Fallback: {pair} oversold bounce setup"
+                }
+            else:
+                return {
+                    "action": "TRADE",
+                    "pair": pair,
+                    "direction": "SHORT",
+                    "entry_price": price,
+                    "stop_loss": round(price * 1.01, 2),
+                    "take_profit": round(price * 0.985, 2),
+                    "position_size_usd": self.trade_size_usd,
+                    "confidence": 70,
+                    "reason": f"Fallback: {pair} overbought pullback setup"
+                }
         
         return {
             "action": "SKIP",
             "confidence": 50,
-            "reason": "Fallback: No clear trading signals in major pairs"
+            "reason": f"Fallback: No clear signals for {pair}"
         }
 
-# 🚀 START BOT
+# 🚀 START MULTI-POSITION BOT
 if __name__ == "__main__":
     try:
-        bot = FullyAutonomousFutureTrader()
-        bot.run_fully_autonomous()
+        bot = MultiPositionFutureTrader()
+        bot.run_multi_position_trading()
     except Exception as e:
         print(f"❌ Failed to start bot: {e}")
-        print("💡 Check your .env file configuration")
