@@ -30,6 +30,9 @@ class MultiPairScalpingTrader:
         self.active_trades = {}  # Dictionary to track multiple trades
         self.blacklisted_pairs = ["BTCUSDT"]  # BTC ကိုထည့်မထားဘူး
         
+        # Precision settings for different pairs
+        self.quantity_precision = {}
+        
         # Auto pair selection parameters
         self.pair_rotation_hours = 6
         self.last_rotation_time = 0
@@ -46,6 +49,7 @@ class MultiPairScalpingTrader:
         
         self.validate_config()
         self.setup_futures()
+        self.load_quantity_precision()
     
     def validate_config(self):
         """Check API keys"""
@@ -64,11 +68,70 @@ class MultiPairScalpingTrader:
         print("✅ Configuration loaded successfully!")
         return True
     
+    def load_quantity_precision(self):
+        """Load quantity precision for all trading pairs"""
+        try:
+            exchange_info = self.binance.futures_exchange_info()
+            for symbol in exchange_info['symbols']:
+                pair = symbol['symbol']
+                # Get quantity precision from LOT_SIZE filter
+                for f in symbol['filters']:
+                    if f['filterType'] == 'LOT_SIZE':
+                        step_size = f['stepSize']
+                        # Calculate precision from step size
+                        if '1' in step_size:
+                            precision = 0
+                        else:
+                            precision = len(step_size.split('.')[1].rstrip('0'))
+                        self.quantity_precision[pair] = precision
+                        break
+            
+            print("✅ Quantity precision loaded for all pairs")
+        except Exception as e:
+            print(f"❌ Error loading quantity precision: {e}")
+    
+    def get_quantity(self, pair, price):
+        """Calculate proper quantity with correct precision"""
+        try:
+            # Calculate base quantity
+            quantity = self.trade_size_usd / price
+            
+            # Apply precision based on pair
+            precision = self.quantity_precision.get(pair, 2)
+            
+            # Round to correct precision
+            quantity = round(quantity, precision)
+            
+            # For pairs that require integer quantities
+            if precision == 0:
+                quantity = int(quantity)
+            
+            # Ensure minimum quantity
+            if quantity <= 0:
+                quantity = self.get_minimum_quantity(pair)
+            
+            return quantity
+            
+        except Exception as e:
+            print(f"❌ Quantity calculation error for {pair}: {e}")
+            # Fallback to safe quantity
+            return round(self.trade_size_usd / price, 2)
+    
+    def get_minimum_quantity(self, pair):
+        """Get minimum quantity for a pair"""
+        min_quantities = {
+            'ADAUSDT': 1, 'XRPUSDT': 1, 'DOGEUSDT': 1, 'TRXUSDT': 1,
+            'ETHUSDT': 0.001, 'BNBUSDT': 0.01, 'SOLUSDT': 0.01,
+            'AVAXUSDT': 0.1, 'MATICUSDT': 1, 'DOTUSDT': 0.1,
+            'LINKUSDT': 0.1, 'LTCUSDT': 0.01, 'ATOMUSDT': 0.1
+        }
+        return min_quantities.get(pair, 0.01)
+    
     def setup_futures(self):
         """Setup futures trading for initial pairs"""
         try:
             # Initial pairs without BTC
-            initial_pairs = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT"]
+            initial_pairs = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "AVAXUSDT"]
             for pair in initial_pairs:
                 try:
                     self.binance.futures_change_leverage(
@@ -153,7 +216,7 @@ class MultiPairScalpingTrader:
             print(f"❌ AI pair selection error: {e}")
         
         # Fallback to default pairs without BTC
-        fallback_pairs = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "DOTUSDT", "MATICUSDT"]
+        fallback_pairs = ["ETHUSDT", "BNBUSDT", "SOLUSDT", "ADAUSDT", "XRPUSDT", "AVAXUSDT", "MATICUSDT"]
         print(f"🔄 Using fallback pairs (No BTC): {fallback_pairs}")
         return fallback_pairs
     
@@ -506,7 +569,7 @@ class MultiPairScalpingTrader:
         }
 
     def execute_scalping_trade(self, decision):
-        """Fixed version with proper price handling"""
+        """Fixed version with proper quantity precision handling"""
         try:
             pair = decision["pair"]
             direction = decision["direction"]
@@ -526,16 +589,8 @@ class MultiPairScalpingTrader:
             current_price = float(ticker['price'])
             print(f"🔍 Current {pair} price: ${current_price}")
             
-            # Calculate quantity
-            quantity = self.trade_size_usd / current_price
-            
-            # Adjust quantity based on pair precision
-            if "ETH" in pair:
-                quantity = round(quantity, 3)
-            elif "ADA" in pair or "DOGE" in pair or "XRP" in pair:
-                quantity = int(quantity)
-            else:
-                quantity = round(quantity, 2)
+            # Calculate quantity with proper precision
+            quantity = self.get_quantity(pair, current_price)
             
             print(f"⚡ EXECUTING: {direction} {quantity} {pair} @ ${current_price}")
             
