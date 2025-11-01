@@ -19,7 +19,7 @@ class MultiPairScalpingTrader:
         
         # SCALPING parameters
         self.trade_size_usd = 50  # Reduced size for multiple trades
-        self.leverage = 25
+        self.leverage = 10
         self.risk_percentage = 1.0
         self.scalp_take_profit = 0.008  # 0.8% for scalping
         self.scalp_stop_loss = 0.005    # 0.5% for scalping
@@ -52,6 +52,15 @@ class MultiPairScalpingTrader:
         if not all([self.binance_api_key, self.binance_secret, self.deepseek_key]):
             print("❌ Missing API keys in .env file!")
             return False
+        
+        # Test Binance connection
+        try:
+            self.binance.futures_exchange_info()
+            print("✅ Binance connection successful!")
+        except Exception as e:
+            print(f"❌ Binance connection failed: {e}")
+            return False
+            
         print("✅ Configuration loaded successfully!")
         return True
     
@@ -497,7 +506,7 @@ class MultiPairScalpingTrader:
         }
 
     def execute_scalping_trade(self, decision):
-        """Execute scalping trade for multiple pairs"""
+        """Fixed version with proper price handling"""
         try:
             pair = decision["pair"]
             direction = decision["direction"]
@@ -512,11 +521,12 @@ class MultiPairScalpingTrader:
                 print(f"⚠️ Already have active trade for {pair}, skipping")
                 return
             
-            # Get current price
+            # Get REAL current price
             ticker = self.binance.futures_symbol_ticker(symbol=pair)
             current_price = float(ticker['price'])
+            print(f"🔍 Current {pair} price: ${current_price}")
             
-            # Calculate quantity with precision
+            # Calculate quantity
             quantity = self.trade_size_usd / current_price
             
             # Adjust quantity based on pair precision
@@ -527,32 +537,29 @@ class MultiPairScalpingTrader:
             else:
                 quantity = round(quantity, 2)
             
-            print(f"⚡ SCALPING EXECUTION #{len(self.active_trades) + 1}:")
-            print(f"   {direction} {quantity} {pair} @ Market")
-            print(f"   Confidence: {decision['confidence']}%")
-            print(f"   Reason: {decision['reason']}")
+            print(f"⚡ EXECUTING: {direction} {quantity} {pair} @ ${current_price}")
             
             # MARKET ENTRY
             if direction == "LONG":
-                entry_order = self.binance.futures_create_order(
+                order = self.binance.futures_create_order(
                     symbol=pair,
                     side='BUY',
                     type='MARKET',
                     quantity=quantity
                 )
-                actual_entry = float(entry_order['avgPrice'])
+                actual_entry = float(order['avgPrice'])
             else:
-                entry_order = self.binance.futures_create_order(
+                order = self.binance.futures_create_order(
                     symbol=pair,
-                    side='SELL', 
+                    side='SELL',
                     type='MARKET',
                     quantity=quantity
                 )
-                actual_entry = float(entry_order['avgPrice'])
+                actual_entry = float(order['avgPrice'])
             
-            print(f"✅ ENTRY: {actual_entry}")
+            print(f"✅ ENTRY SUCCESS: ${actual_entry}")
             
-            # Calculate TP/SL prices
+            # Calculate TP/SL with validation
             if direction == "LONG":
                 stop_loss = actual_entry * (1 - self.scalp_stop_loss)
                 take_profit = actual_entry * (1 + self.scalp_take_profit)
@@ -560,7 +567,13 @@ class MultiPairScalpingTrader:
                 stop_loss = actual_entry * (1 + self.scalp_stop_loss)
                 take_profit = actual_entry * (1 - self.scalp_take_profit)
             
-            # TP/SL orders
+            # Ensure positive prices and proper rounding
+            stop_loss = max(0.01, round(stop_loss, 2))
+            take_profit = max(0.01, round(take_profit, 2))
+            
+            print(f"🎯 TP: ${take_profit}, SL: ${stop_loss}")
+            
+            # Place TP/SL orders
             if direction == "LONG":
                 # STOP LOSS
                 self.binance.futures_create_order(
@@ -568,7 +581,7 @@ class MultiPairScalpingTrader:
                     side='SELL',
                     type='STOP_MARKET',
                     quantity=quantity,
-                    stopPrice=round(stop_loss, 4),
+                    stopPrice=stop_loss,
                     timeInForce='GTC',
                     reduceOnly=True
                 )
@@ -578,7 +591,7 @@ class MultiPairScalpingTrader:
                     side='SELL',
                     type='LIMIT',
                     quantity=quantity,
-                    price=round(take_profit, 4),
+                    price=take_profit,
                     timeInForce='GTC',
                     reduceOnly=True
                 )
@@ -589,7 +602,7 @@ class MultiPairScalpingTrader:
                     side='BUY',
                     type='STOP_MARKET',
                     quantity=quantity,
-                    stopPrice=round(stop_loss, 4),
+                    stopPrice=stop_loss,
                     timeInForce='GTC',
                     reduceOnly=True
                 )
@@ -599,7 +612,7 @@ class MultiPairScalpingTrader:
                     side='BUY',
                     type='LIMIT',
                     quantity=quantity,
-                    price=round(take_profit, 4),
+                    price=take_profit,
                     timeInForce='GTC',
                     reduceOnly=True
                 )
@@ -616,13 +629,13 @@ class MultiPairScalpingTrader:
                 "confidence": decision["confidence"]
             }
             
-            print(f"🎯 TRADE #{len(self.active_trades)} ACTIVE!")
-            print(f"   SL: ${stop_loss:.4f}")
-            print(f"   TP: ${take_profit:.4f}")
+            print(f"🚀 TRADE #{len(self.active_trades)} ACTIVATED!")
             print(f"   Active Trades: {list(self.active_trades.keys())}")
             
         except Exception as e:
-            print(f"❌ Scalping trade execution failed: {e}")
+            print(f"❌ Trade execution failed: {e}")
+            import traceback
+            traceback.print_exc()
 
     def check_scalping_trades(self):
         """Check all active trades status"""
@@ -676,7 +689,8 @@ class MultiPairScalpingTrader:
             print(f"\n📊 CURRENT STATUS:")
             print(f"   Available Pairs: {len(self.available_pairs)}")
             print(f"   Active Trades: {len(self.active_trades)}/{self.max_concurrent_trades}")
-            print(f"   Trading Pairs: {list(self.active_trades.keys())}")
+            if self.active_trades:
+                print(f"   Trading Pairs: {list(self.active_trades.keys())}")
             
             # Get AI decision for each available pair
             trade_opportunities = []
@@ -743,7 +757,8 @@ class MultiPairScalpingTrader:
                 
             except KeyboardInterrupt:
                 print(f"\n🛑 BOT STOPPED BY USER")
-                print(f"   Active Trades: {list(self.active_trades.keys())}")
+                if self.active_trades:
+                    print(f"   Active Trades: {list(self.active_trades.keys())}")
                 break
             except Exception as e:
                 print(f"❌ Main loop error: {e}")
