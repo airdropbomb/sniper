@@ -101,41 +101,59 @@ class MultiPairScalpingTrader:
             print(f"❌ Error loading symbol precision: {e}")
     
     def get_quantity(self, pair, price):
-        """Calculate proper quantity with correct precision"""
-        try:
-            # Calculate base quantity
-            quantity = self.trade_size_usd / price
-            
-            # Apply precision based on pair
-            precision = self.quantity_precision.get(pair, 2)
-            
-            # Round to correct precision
+    """Calculate proper quantity with correct precision AND minimum value"""
+    try:
+        # Calculate base quantity
+        quantity = self.trade_size_usd / price
+        
+        # Apply precision based on pair
+        precision = self.quantity_precision.get(pair, 2)
+        
+        # Round to correct precision
+        quantity = round(quantity, precision)
+        
+        # For pairs that require integer quantities
+        if precision == 0:
+            quantity = int(quantity)
+        
+        # ENSURE MINIMUM TRADE SIZE - FIXED
+        min_quantity = self.get_minimum_quantity(pair)
+        calculated_value = quantity * price
+        
+        # If calculated value is less than minimum trade size, adjust quantity
+        if calculated_value < self.trade_size_usd:
+            # Calculate minimum quantity to meet trade size
+            min_required_quantity = self.trade_size_usd / price
+            quantity = max(quantity, min_required_quantity)
             quantity = round(quantity, precision)
-            
-            # For pairs that require integer quantities
             if precision == 0:
                 quantity = int(quantity)
             
-            # Ensure minimum quantity
-            if quantity <= 0:
-                quantity = self.get_minimum_quantity(pair)
-            
-            return quantity
-            
-        except Exception as e:
-            print(f"❌ Quantity calculation error for {pair}: {e}")
-            # Fallback to safe quantity
-            return round(self.trade_size_usd / price, 2)
-    
-    def get_minimum_quantity(self, pair):
-        """Get minimum quantity for a pair"""
-        min_quantities = {
-            'ADAUSDT': 1, 'XRPUSDT': 1, 'DOGEUSDT': 1, 'TRXUSDT': 1,
-            'ETHUSDT': 0.001, 'BNBUSDT': 0.01, 'SOLUSDT': 0.01,
-            'AVAXUSDT': 0.1, 'MATICUSDT': 1, 'DOTUSDT': 0.1,
-            'LINKUSDT': 0.1, 'LTCUSDT': 0.01, 'ATOMUSDT': 0.1
-        }
-        return min_quantities.get(pair, 0.01)
+            print(f"⚠️ Adjusted {pair} quantity from {quantity} to meet ${self.trade_size_usd} minimum")
+        
+        # Final validation
+        if quantity <= 0:
+            quantity = self.get_minimum_quantity(pair)
+        
+        actual_value = quantity * price
+        print(f"💰 {pair}: {quantity} @ ${price} = ${actual_value:.2f}")
+        
+        return quantity
+        
+    except Exception as e:
+        print(f"❌ Quantity calculation error for {pair}: {e}")
+        # Fallback to safe quantity
+        return round(self.trade_size_usd / price, 2)
+
+def get_minimum_quantity(self, pair):
+    """Get minimum quantity for a pair based on Binance requirements"""
+    min_quantities = {
+        'ADAUSDT': 1, 'XRPUSDT': 1, 'DOGEUSDT': 1, 'TRXUSDT': 1,
+        'ETHUSDT': 0.001, 'BNBUSDT': 0.01, 'SOLUSDT': 0.01,
+        'AVAXUSDT': 0.1, 'MATICUSDT': 1, 'DOTUSDT': 0.1,
+        'LINKUSDT': 0.1, 'LTCUSDT': 0.01, 'ATOMUSDT': 0.1
+    }
+    return min_quantities.get(pair, 0.01)
     
     def format_price(self, pair, price):
         """Format price according to symbol precision"""
