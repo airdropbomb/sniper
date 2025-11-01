@@ -3,7 +3,7 @@ import requests
 import json
 import time
 import re
-import numpy as np  # ✅ ADD THIS LINE
+import numpy as np
 from binance.client import Client
 from dotenv import load_dotenv
 
@@ -166,74 +166,138 @@ class FullyAutonomousFutureTrader:
         except Exception as e:
             print(f"❌ API error: {e}")
             return self.get_fallback_decision(market_data)
-    
-    def execute_autonomous_trade(self, decision):
-    """Fixed version with proper precision handling"""
-    try:
-        pair = decision["pair"]
-        direction = decision["direction"]
-        entry_price = decision["entry_price"]
+
+    def get_safe_quantity(self, pair, entry_price):
+        """Safe quantity calculation with precision handling"""
+        try:
+            # Get symbol info from exchange
+            symbol_info = self.binance.futures_exchange_info()
+            pair_info = next((s for s in symbol_info['symbols'] if s['symbol'] == pair), None)
+            
+            if pair_info:
+                lot_size_filter = next((f for f in pair_info['filters'] if f['filterType'] == 'LOT_SIZE'), None)
+                if lot_size_filter:
+                    min_qty = float(lot_size_filter['minQty'])
+                    step_size = float(lot_size_filter['stepSize'])
+                    
+                    # Calculate ideal quantity
+                    quantity = self.trade_size_usd / entry_price
+                    
+                    # Ensure minimum quantity
+                    quantity = max(quantity, min_qty)
+                    
+                    # Round to step size
+                    precision = self.get_step_precision(step_size)
+                    quantity = (quantity // step_size) * step_size
+                    quantity = round(quantity, precision)
+                    
+                    print(f"🔧 Quantity Calculation:")
+                    print(f"   MinQty: {min_qty}")
+                    print(f"   StepSize: {step_size}") 
+                    print(f"   Precision: {precision} decimals")
+                    print(f"   Final Quantity: {quantity}")
+                    
+                    return quantity
+                    
+        except Exception as e:
+            print(f"⚠️ Precision error, using fallback: {e}")
         
-        # Get safe quantity with proper precision
-        quantity = self.get_safe_quantity(pair, entry_price)
-        
-        # Final validation
-        if quantity <= 0:
-            print(f"❌ Invalid quantity: {quantity}")
-            return
-        
-        print(f"🔧 Trade Execution Details:")
-        print(f"   Pair: {pair}")
-        print(f"   Direction: {direction}")
-        print(f"   Entry: ${entry_price}")
-        print(f"   Quantity: {quantity}")
-        print(f"   Size: ${self.trade_size_usd}")
-        print(f"   Leverage: {self.leverage}x")
-        print(f"   Effective: ${self.trade_size_usd * self.leverage}")
-        print(f"   Notional: ${entry_price * quantity:.2f}")
-        
-        if direction == "LONG":
-            order = self.binance.futures_create_order(
-                symbol=pair,
-                side='BUY',
-                type='LIMIT',
-                quantity=quantity,
-                price=str(entry_price),
-                timeInForce='GTC'
-            )
-        else:  # SHORT
-            order = self.binance.futures_create_order(
-                symbol=pair,
-                side='SELL',
-                type='LIMIT',
-                quantity=quantity,
-                price=str(entry_price),
-                timeInForce='GTC'
-            )
-        
-        # Save trade info
-        self.active_trade = {
-            "pair": pair,
-            "direction": direction,
-            "entry_price": entry_price,
-            "stop_loss": decision["stop_loss"],
-            "take_profit": decision["take_profit"],
-            "quantity": quantity,
-            "order_id": order['orderId'],
-            "entry_time": time.time(),
-            "size_usd": self.trade_size_usd,
-            "leverage": self.leverage
+        # Fallback to manual precision
+        return self.apply_pair_precision(pair, self.trade_size_usd / entry_price)
+
+    def get_step_precision(self, step_size):
+        """Calculate precision from step size"""
+        step_str = str(step_size).rstrip('0')
+        if '.' in step_str:
+            return len(step_str.split('.')[1])
+        else:
+            return 0
+
+    def apply_pair_precision(self, pair, quantity):
+        """Apply pair-specific quantity precision"""
+        precision_map = {
+            "ETHUSDT": 3,   # 0.001 ETH
+            "SOLUSDT": 1,   # 0.1 SOL
+            "ADAUSDT": 0,   # 1 ADA (whole numbers only) ⚠️ IMPORTANT
+            "XRPUSDT": 0,   # 1 XRP (whole numbers only)
         }
         
-        print(f"✅ TRADE EXECUTED: {direction} {pair}")
-        print(f"   SL: ${decision['stop_loss']}, TP: ${decision['take_profit']}")
-        print(f"   Reason: {decision['reason']}")
+        precision = precision_map.get(pair, 0)
+        quantity = round(quantity, precision)
         
-    except Exception as e:
-        print(f"❌ Trade failed: {e}")
-        # Debug info
-        print(f"   Debug - Pair: {pair}, Price: {entry_price}")
-        print(f"   Debug - Calculated Quantity: {self.trade_size_usd / entry_price}")
+        # Ensure whole numbers for ADA and XRP
+        if precision == 0:
+            quantity = int(quantity)
+            
+        return quantity
+
+    def execute_autonomous_trade(self, decision):
+        """Fixed version with proper precision handling"""
+        try:
+            pair = decision["pair"]
+            direction = decision["direction"]
+            entry_price = decision["entry_price"]
+            
+            # Get safe quantity with proper precision
+            quantity = self.get_safe_quantity(pair, entry_price)
+            
+            # Final validation
+            if quantity <= 0:
+                print(f"❌ Invalid quantity: {quantity}")
+                return
+            
+            print(f"🔧 Trade Execution Details:")
+            print(f"   Pair: {pair}")
+            print(f"   Direction: {direction}")
+            print(f"   Entry: ${entry_price}")
+            print(f"   Quantity: {quantity}")
+            print(f"   Size: ${self.trade_size_usd}")
+            print(f"   Leverage: {self.leverage}x")
+            print(f"   Effective: ${self.trade_size_usd * self.leverage}")
+            print(f"   Notional: ${entry_price * quantity:.2f}")
+            
+            if direction == "LONG":
+                order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='LIMIT',
+                    quantity=quantity,
+                    price=str(entry_price),
+                    timeInForce='GTC'
+                )
+            else:  # SHORT
+                order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='LIMIT',
+                    quantity=quantity,
+                    price=str(entry_price),
+                    timeInForce='GTC'
+                )
+            
+            # Save trade info
+            self.active_trade = {
+                "pair": pair,
+                "direction": direction,
+                "entry_price": entry_price,
+                "stop_loss": decision["stop_loss"],
+                "take_profit": decision["take_profit"],
+                "quantity": quantity,
+                "order_id": order['orderId'],
+                "entry_time": time.time(),
+                "size_usd": self.trade_size_usd,
+                "leverage": self.leverage
+            }
+            
+            print(f"✅ TRADE EXECUTED: {direction} {pair}")
+            print(f"   SL: ${decision['stop_loss']}, TP: ${decision['take_profit']}")
+            print(f"   Reason: {decision['reason']}")
+            
+        except Exception as e:
+            print(f"❌ Trade failed: {e}")
+            # Debug info
+            print(f"   Debug - Pair: {pair}, Price: {entry_price}")
+            print(f"   Debug - Calculated Quantity: {self.trade_size_usd / entry_price}")
     
     def check_autonomous_exit(self):
         """Check and manage current trade"""
