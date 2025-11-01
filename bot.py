@@ -100,7 +100,7 @@ class MultiPairScalpingTrader:
         except Exception as e:
             print(f"❌ Error loading symbol precision: {e}")
     
-    def get_quantity(self, pair, price):
+     def get_quantity(self, pair, price):
     """Calculate proper quantity with correct precision AND minimum value"""
     try:
         # Calculate base quantity
