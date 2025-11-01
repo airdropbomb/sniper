@@ -18,7 +18,7 @@ class MultiPairScalpingTrader:
         self.deepseek_key = os.getenv('DEEPSEEK_API_KEY')
         
         # SCALPING parameters
-        self.trade_size_usd = 150  # Increased for high-priced pairs
+        self.trade_size_usd = 50  # Base size, will be adjusted dynamically
         self.leverage = 10
         self.risk_percentage = 1.0
         self.scalp_take_profit = 0.008  # 0.8% for scalping
@@ -42,7 +42,7 @@ class MultiPairScalpingTrader:
         self.binance = Client(self.binance_api_key, self.binance_secret)
         
         print("🤖 MULTI-PAIR SCALPING BOT ACTIVATED!")
-        print(f"💵 Trade Size: ${self.trade_size_usd} per trade")
+        print(f"💵 Base Trade Size: ${self.trade_size_usd} (will adjust dynamically)")
         print(f"📈 Max Concurrent Trades: {self.max_concurrent_trades}")
         print(f"🎯 Take Profit: {self.scalp_take_profit*100}%")
         print(f"🛡️ Stop Loss: {self.scalp_stop_loss*100}%")
@@ -100,52 +100,58 @@ class MultiPairScalpingTrader:
         except Exception as e:
             print(f"❌ Error loading symbol precision: {e}")
     
+    def get_dynamic_trade_size(self, pair, price):
+        """Smart trade sizing based on pair price"""
+        # High price pairs need larger trade size to meet Binance minimums
+        if price > 3000:  # ETH
+            return 200
+        elif price > 500:   # BNB
+            return 100
+        elif price > 100:   # SOL, AVAX, LINK
+            return 75
+        else:               # ADA, XRP, DOGE, MATIC, etc.
+            return 50
+
     def get_quantity(self, pair, price):
-        """FIXED - Ensure minimum trade size"""
+        """FIXED - Smart quantity calculation with dynamic sizing"""
         try:
-            # Calculate base quantity
-            base_quantity = self.trade_size_usd / price
-            print(f"🔢 {pair} base quantity: {base_quantity}")
+            # Get smart trade size based on pair price
+            trade_size = self.get_dynamic_trade_size(pair, price)
             
-            # Apply precision based on pair
+            # Calculate quantity
+            quantity = trade_size / price
             precision = self.quantity_precision.get(pair, 2)
-            
-            # Round to correct precision
-            quantity = round(base_quantity, precision)
-            
-            # For pairs that require integer quantities
+            quantity = round(quantity, precision)
             if precision == 0:
                 quantity = int(quantity)
             
-            # Calculate actual trade value
+            # Binance futures minimum order value is $20
+            min_order_value = 20
             trade_value = quantity * price
             
-            # If trade value is too small, adjust quantity upward
-            if trade_value < self.trade_size_usd * 0.8:  # If less than 80% of target
-                # Calculate minimum quantity to reach target
-                min_quantity = self.trade_size_usd / price
+            # Ensure we meet Binance minimum
+            if trade_value < min_order_value:
+                print(f"⚠️ Below Binance minimum: ${trade_value:.2f} < ${min_order_value}")
+                min_quantity = min_order_value / price
                 quantity = round(min_quantity, precision)
                 if precision == 0:
                     quantity = int(quantity)
-                
-                # Recalculate trade value
                 trade_value = quantity * price
-                print(f"🔄 Adjusted {pair} quantity to {quantity} (${trade_value:.2f})")
+                print(f"🚀 Adjusted to meet minimum: {quantity} = ${trade_value:.2f}")
             
-            # Ensure minimum quantity requirement
-            min_qty = self.get_minimum_quantity(pair)
-            if quantity < min_qty:
-                quantity = min_qty
+            # Final check for symbol minimum quantity
+            symbol_min = self.get_minimum_quantity(pair)
+            if quantity < symbol_min:
+                quantity = symbol_min
                 trade_value = quantity * price
-                print(f"📏 Using minimum quantity {quantity} for {pair} (${trade_value:.2f})")
+                print(f"📏 Using symbol minimum: {quantity} = ${trade_value:.2f}")
             
-            print(f"💰 FINAL: {quantity} {pair} = ${trade_value:.2f}")
-            
+            print(f"💰 {pair}: {quantity} = ${trade_value:.2f} (Trade Size: ${trade_size})")
             return quantity
             
         except Exception as e:
             print(f"❌ Quantity calculation error for {pair}: {e}")
-            # Fallback to minimum quantity
+            # Emergency fallback
             return self.get_minimum_quantity(pair)
     
     def get_minimum_quantity(self, pair):
