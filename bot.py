@@ -26,7 +26,7 @@ class MultiPositionFutureTrader:
         # Initialize Binance client
         self.binance = Client(self.binance_api_key, self.binance_secret)
         
-        self.available_pairs = ["ETHUSDT", "SOLUSDT", "ADAUSDT", "BNB"]
+        self.available_pairs = ["ETHUSDT", "SOLUSDT", "ADAUSDT"]
         self.active_trades = {}  # Dictionary to store multiple active trades
         self.max_trades_per_pair = 1  # Only one trade per pair at a time
         
