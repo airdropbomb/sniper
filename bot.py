@@ -1,236 +1,282 @@
-import ccxt
-import talib
-import pandas as pd
-import numpy as np
+import requests
+import json
 import time
-import os
+import hmac
+import hashlib
+from binance.client import Client
 from datetime import datetime
-from dotenv import load_dotenv
-import logging
 
-# Setup logging
-logging.basicConfig(
-    filename='sniper_bot.log',
-    level=logging.INFO,
-    format='%(asctime)s - %(levelname)s - %(message)s'
-)
-
-# Load .env file
-load_dotenv()
-
-# Binance Demo Trading configuration
-exchange = ccxt.binance({
-    'apiKey': os.getenv('BINANCE_API_KEY'),
-    'secret': os.getenv('BINANCE_SECRET'),
-    'enableDemoTrading': True,  # Demo trading mode
-    'enableRateLimit': True,
-    'options': {
-        'defaultType': 'future',  # Futures market
-    },
-})
-
-# Trading parameters
-symbol = 'BTC/USDT'
-timeframe = '1m'
-leverage = 5
-amount_usdt = 100  # Position size in USDT (small for testing)
-max_position_size = 0.05  # Max 5% of account balance
-
-# Test API key validity
-def test_api_key():
-    try:
-        balance = exchange.fetch_balance()
-        logging.info(f"API key valid. Balance: {balance['total']}")
-        return True
-    except ccxt.AuthenticationError as e:
-        logging.error(f"Invalid API key: {e}")
-        print(f"Fatal error: Invalid API key. Please check .env file. Exiting...")
-        return False
-    except Exception as e:
-        logging.error(f"Error testing API key: {e}")
-        return False
-
-# Mock news sentiment function (replace with real NewsAPI or NLP model)
-def get_news_sentiment():
-    """Mock sentiment score (-1 to 1)"""
-    sentiment = np.random.uniform(-1, 1)
-    logging.info(f"Generated mock sentiment: {sentiment:.2f}")
-    return sentiment
-
-# Fetch OHLCV data
-def fetch_ohlcv(symbol, timeframe, limit=100):
-    """Fetch OHLCV data"""
-    try:
-        ohlcv = exchange.fetch_ohlcv(symbol, timeframe, limit=limit)
-        df = pd.DataFrame(ohlcv, columns=['timestamp', 'open', 'high', 'low', 'close', 'volume'])
-        df['timestamp'] = pd.to_datetime(df['timestamp'], unit='ms')
-        logging.info("Successfully fetched OHLCV data")
-        return df
-    except Exception as e:
-        logging.error(f"Error fetching OHLCV: {e}")
-        return None
-
-# Calculate indicators
-def calculate_indicators(df):
-    """Calculate RSI, EMA, and ATR"""
-    try:
-        close = df['close'].values
-        rsi = talib.RSI(close, timeperiod=14)
-        ema_fast = talib.EMA(close, timeperiod=9)
-        ema_slow = talib.EMA(close, timeperiod=21)
-        atr = talib.ATR(df['high'].values, df['low'].values, close, timeperiod=14)
-        indicators = {
-            'rsi': rsi[-1] if not np.isnan(rsi[-1]) else 50,
-            'ema_crossover': ema_fast[-1] > ema_slow[-1] if not np.isnan(ema_fast[-1]) else False,
-            'ema_crossunder': ema_fast[-1] < ema_slow[-1] if not np.isnan(ema_fast[-1]) else False,
-            'atr': atr[-1] if not np.isnan(atr[-1]) else 0
-        }
-        logging.info(f"Indicators: RSI={indicators['rsi']:.2f}, ATR={indicators['atr']:.2f}")
-        return indicators
-    except Exception as e:
-        logging.error(f"Error calculating indicators: {e}")
-        return {'rsi': 50, 'ema_crossover': False, 'ema_crossunder': False, 'atr': 0}
-
-# Dynamic SL/TP based on volatility and sentiment
-def calculate_sl_tp(entry_price, atr, sentiment):
-    """Calculate dynamic stop-loss and take-profit"""
-    try:
-        volatility_factor = atr / entry_price
-        base_sl = 0.02  # 2% base stop-loss
-        base_tp = 0.04  # 4% base take-profit
-        sl_pct = base_sl * (1 + abs(sentiment) * 0.5) * (1 + volatility_factor)
-        tp_pct = base_tp * (1 + abs(sentiment) * 0.5) * (1 + volatility_factor)
-        logging.info(f"SL: {sl_pct*100:.2f}%, TP: {tp_pct*100:.2f}%")
-        return sl_pct, tp_pct
-    except Exception as e:
-        logging.error(f"Error calculating SL/TP: {e}")
-        return 0.02, 0.04
-
-# Get current position
-def get_position():
-    """Check current position"""
-    try:
-        positions = exchange.fetch_positions([symbol])
-        for pos in positions:
-            if pos['symbol'] == symbol and float(pos['contracts']) != 0:
-                logging.info(f"Position: {pos['side']} {pos['contracts']} at avg {pos['entryPrice']}")
-                return pos
-        return None
-    except Exception as e:
-        logging.error(f"Error fetching position: {e}")
-        return None
-
-# Open long position
-def open_long_position(amount_usdt, sl_pct, tp_pct):
-    """Open long position with SL/TP"""
-    try:
-        ticker = exchange.fetch_ticker(symbol)
-        price = ticker['last']
-        amount = amount_usdt / price
-        order = exchange.create_market_buy_order(symbol, amount)
-        sl_price = price * (1 - sl_pct)
-        tp_price = price * (1 + tp_pct)
-        exchange.create_stop_limit_order(symbol, 'sell', amount, sl_price, None, {'stopPrice': sl_price})
-        exchange.create_limit_sell_order(symbol, amount, tp_price)
-        logging.info(f"Long opened: {amount} {symbol} at {price}, SL: {sl_price}, TP: {tp_price}")
-        return order
-    except Exception as e:
-        logging.error(f"Error opening long position: {e}")
-        return None
-
-# Open short position
-def open_short_position(amount_usdt, sl_pct, tp_pct):
-    """Open short position with SL/TP"""
-    try:
-        ticker = exchange.fetch_ticker(symbol)
-        price = ticker['last']
-        amount = amount_usdt / price
-        order = exchange.create_market_sell_order(symbol, amount)
-        sl_price = price * (1 + sl_pct)
-        tp_price = price * (1 - tp_pct)
-        exchange.create_stop_limit_order(symbol, 'buy', amount, sl_price, None, {'stopPrice': sl_price})
-        exchange.create_limit_buy_order(symbol, amount, tp_price)
-        logging.info(f"Short opened: {amount} {symbol} at {price}, SL: {sl_price}, TP: {tp_price}")
-        return order
-    except Exception as e:
-        logging.error(f"Error opening short position: {e}")
-        return None
-
-# AI decision logic
-def ai_decision(df, sentiment):
-    """AI decision based on indicators and sentiment"""
-    if df is None:
-        logging.warning("No OHLCV data, skipping decision")
-        return None, None, None
-    indicators = calculate_indicators(df)
-    rsi, ema_crossover, ema_crossunder, atr = indicators['rsi'], indicators['ema_crossover'], indicators['ema_crossunder'], indicators['atr']
-    
-    # Simple decision rules (replace with RL model in production)
-    score = 0
-    if rsi < 30: score += 0.4  # Oversold
-    if rsi > 70: score -= 0.4  # Overbought
-    if ema_crossover: score += 0.3  # Bullish trend
-    if ema_crossunder: score -= 0.3  # Bearish trend
-    score += sentiment * 0.3  # Sentiment impact
-    logging.info(f"Decision score: {score:.2f}")
-    
-    # Calculate dynamic SL/TP
-    sl_pct, tp_pct = calculate_sl_tp(df['close'].iloc[-1], atr, sentiment)
-    
-    # Decision
-    if score > 0.5 and get_position() is None:
-        return 'long', sl_pct, tp_pct
-    elif score < -0.5 and get_position() is None:
-        return 'short', sl_pct, tp_pct
-    return None, None, None
-
-# Test API key before starting
-if not test_api_key():
-    exit(1)
-
-# Set leverage (with error handling)
-try:
-    exchange.set_leverage(leverage, symbol)
-    logging.info(f"Leverage set to {leverage}x for {symbol}")
-except ccxt.NotSupported:
-    logging.warning("Leverage setting not supported in demo mode, ensure leverage is set in Binance Demo UI")
-except ccxt.AuthenticationError as e:
-    logging.error(f"Authentication error setting leverage: {e}")
-    print(f"Fatal error: Invalid API key. Please check .env file. Exiting...")
-    exit(1)
-except Exception as e:
-    logging.error(f"Error setting leverage: {e}")
-
-# Main loop
-print("AI Sniper Bot started... Press Ctrl+C to stop.")
-logging.info("AI Sniper Bot started")
-while True:
-    try:
-        df = fetch_ohlcv(symbol, timeframe)
-        sentiment = get_news_sentiment()
-        decision, sl_pct, tp_pct = ai_decision(df, sentiment)
+class DeepSeekTradingBot:
+    def __init__(self, binance_api_key, binance_secret_key, deepseek_api_key):
+        # Binance API Setup
+        self.binance_client = Client(binance_api_key, binance_secret_key)
         
-        if decision == 'long':
-            open_long_position(amount_usdt, sl_pct, tp_pct)
-        elif decision == 'short':
-            open_short_position(amount_usdt, sl_pct, tp_pct)
-        else:
-            position = get_position()
-            if position:
-                print(f"Position open: {position['side']} {position['contracts']} at avg {position['entryPrice']}, PnL: {position['unrealizedPnl']}")
+        # DeepSeek API Setup
+        self.deepseek_api_key = deepseek_api_key
+        self.deepseek_url = "https://api.deepseek.com/v1/chat/completions"
+        
+        # Trading Parameters
+        self.symbol = "BTCUSDT"
+        self.trade_amount = 0.001  # BTC amount per trade
+        self.max_risk = 0.02  # 2% risk per trade
+        
+    def get_binance_data(self):
+        """Get real-time market data from Binance"""
+        try:
+            # Current price
+            ticker = self.binance_client.get_symbol_ticker(symbol=self.symbol)
+            current_price = float(ticker['price'])
+            
+            # 15-minute KLines for technical analysis
+            klines = self.binance_client.get_klines(
+                symbol=self.symbol, 
+                interval=Client.KLINE_INTERVAL_15MINUTE, 
+                limit=50
+            )
+            
+            # Calculate RSI
+            closes = [float(k[4]) for k in klines]
+            rsi = self.calculate_rsi(closes)
+            
+            # Support and Resistance
+            support = min(closes[-20:]) * 0.999
+            resistance = max(closes[-20:]) * 1.001
+            
+            market_data = {
+                'symbol': self.symbol,
+                'price': current_price,
+                'rsi': rsi,
+                'support': support,
+                'resistance': resistance,
+                'volume': float(klines[-1][5]),
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            return market_data
+            
+        except Exception as e:
+            print(f"Binance data error: {e}")
+            return None
+    
+    def calculate_rsi(self, prices, period=14):
+        """Calculate RSI indicator"""
+        if len(prices) < period + 1:
+            return 50
+            
+        gains = []
+        losses = []
+        
+        for i in range(1, len(prices)):
+            change = prices[i] - prices[i-1]
+            if change > 0:
+                gains.append(change)
             else:
-                print(f"No signal. RSI: {calculate_indicators(df)['rsi']:.2f}, Sentiment: {sentiment:.2f}")
+                losses.append(abs(change))
+                
+        if len(gains) < period or len(losses) < period:
+            return 50
+            
+        avg_gain = sum(gains[-period:]) / period
+        avg_loss = sum(losses[-period:]) / period
         
-        time.sleep(60)  # Check every 1 minute
-    except KeyboardInterrupt:
-        print("Bot stopped by user.")
-        logging.info("Bot stopped by user")
-        break
-    except ccxt.AuthenticationError as e:
-        print(f"Fatal error: Invalid API key. Please check .env file. Exiting...")
-        logging.error(f"Authentication error: {e}")
-        break
-    except Exception as e:
-        print(f"Error in main loop: {e}")
-        logging.error(f"Error in main loop: {e}")
-        time.sleep(60)
+        if avg_loss == 0:
+            return 100
+            
+        rs = avg_gain / avg_loss
+        rsi = 100 - (100 / (1 + rs))
+        
+        return round(rsi, 2)
+    
+    def get_deepseek_analysis(self, market_data):
+        """Get trading analysis from DeepSeek AI"""
+        try:
+            prompt = f"""
+            CRYPTO TRADING ANALYSIS REQUEST:
+            
+            SYMBOL: {market_data['symbol']}
+            CURRENT PRICE: {market_data['price']}
+            RSI (14): {market_data['rsi']}
+            SUPPORT: {market_data['support']:.2f}
+            RESISTANCE: {market_data['resistance']:.2f}
+            VOLUME: {market_data['volume']:.2f}
+            
+            SCALPING STRATEGY (5-30 minutes hold):
+            - Analyze current market condition
+            - Identify entry/exit points
+            - Assess risk/reward ratio
+            
+            RESPONSE FORMAT (JSON only):
+            {{
+                "action": "BUY/SELL/HOLD",
+                "confidence": 0-100,
+                "entry_price": number,
+                "stop_loss": number, 
+                "take_profit": number,
+                "reason": "brief explanation",
+                "timeframe": "expected hold duration"
+            }}
+            """
+            
+            headers = {
+                "Authorization": f"Bearer {self.deepseek_api_key}",
+                "Content-Type": "application/json"
+            }
+            
+            payload = {
+                "model": "deepseek-chat",
+                "messages": [{"role": "user", "content": prompt}],
+                "temperature": 0.1,
+                "max_tokens": 500
+            }
+            
+            response = requests.post(self.deepseek_url, headers=headers, json=payload)
+            response.raise_for_status()
+            
+            ai_response = response.json()
+            content = ai_response['choices'][0]['message']['content']
+            
+            # Extract JSON from response
+            import re
+            json_match = re.search(r'\{.*\}', content, re.DOTALL)
+            if json_match:
+                trading_signal = json.loads(json_match.group())
+                return trading_signal
+            else:
+                print("No JSON found in AI response")
+                return None
+                
+        except Exception as e:
+            print(f"DeepSeek API error: {e}")
+            return None
+    
+    def execute_trade(self, signal, market_data):
+        """Execute trade based on AI signal"""
+        try:
+            if signal['confidence'] < 70:
+                print(f"❌ Low confidence: {signal['confidence']}% - Skipping trade")
+                return False
+            
+            current_price = market_data['price']
+            
+            if signal['action'] == 'BUY':
+                # Place buy order
+                order = self.binance_client.order_limit_buy(
+                    symbol=self.symbol,
+                    quantity=self.trade_amount,
+                    price=str(current_price)
+                )
+                print(f"✅ BUY order placed: {self.trade_amount} {self.symbol} at {current_price}")
+                
+                # Set stop loss and take profit
+                self.place_stop_loss(signal['stop_loss'])
+                self.place_take_profit(signal['take_profit'])
+                
+            elif signal['action'] == 'SELL':
+                # Place sell order  
+                order = self.binance_client.order_limit_sell(
+                    symbol=self.symbol,
+                    quantity=self.trade_amount, 
+                    price=str(current_price)
+                )
+                print(f"✅ SELL order placed: {self.trade_amount} {self.symbol} at {current_price}")
+                
+            else:  # HOLD
+                print(f"⚡ HOLD signal - Reason: {signal['reason']}")
+                return False
+                
+            return True
+            
+        except Exception as e:
+            print(f"Trade execution error: {e}")
+            return False
+    
+    def place_stop_loss(self, stop_price):
+        """Place stop loss order"""
+        try:
+            order = self.binance_client.create_order(
+                symbol=self.symbol,
+                side=Client.SIDE_SELL,
+                type=Client.ORDER_TYPE_STOP_LOSS_LIMIT,
+                quantity=self.trade_amount,
+                price=str(stop_price * 0.998),  # Slightly below stop
+                stopPrice=str(stop_price),
+                timeInForce=Client.TIME_IN_FORCE_GTC
+            )
+            print(f"🛡️ Stop loss set at: {stop_price}")
+        except Exception as e:
+            print(f"Stop loss error: {e}")
+    
+    def place_take_profit(self, take_profit_price):
+        """Place take profit order"""
+        try:
+            order = self.binance_client.create_order(
+                symbol=self.symbol,
+                side=Client.SIDE_SELL,
+                type=Client.ORDER_TYPE_LIMIT,
+                quantity=self.trade_amount,
+                price=str(take_profit_price),
+                timeInForce=Client.TIME_IN_FORCE_GTC
+            )
+            print(f"🎯 Take profit set at: {take_profit_price}")
+        except Exception as e:
+            print(f"Take profit error: {e}")
+    
+    def run_bot(self):
+        """Main bot execution loop"""
+        print("🚀 DeepSeek Trading Bot Started!")
+        print("=" * 50)
+        
+        while True:
+            try:
+                # 1. Get market data
+                print(f"\n📊 Fetching market data... {datetime.now().strftime('%H:%M:%S')}")
+                market_data = self.get_binance_data()
+                
+                if not market_data:
+                    time.sleep(60)
+                    continue
+                
+                print(f"💰 {market_data['symbol']} Price: ${market_data['price']:.2f}")
+                print(f"📈 RSI: {market_data['rsi']}")
+                
+                # 2. Get AI analysis
+                print("🤖 Consulting DeepSeek AI...")
+                signal = self.get_deepseek_analysis(market_data)
+                
+                if signal:
+                    print(f"🎯 Signal: {signal['action']} (Confidence: {signal['confidence']}%)")
+                    print(f"💡 Reason: {signal['reason']}")
+                    
+                    # 3. Execute trade
+                    if signal['confidence'] >= 70:
+                        self.execute_trade(signal, market_data)
+                    else:
+                        print("⏸️ Waiting for better opportunity...")
+                
+                # 4. Wait before next analysis
+                print("💤 Waiting 5 minutes for next analysis...")
+                time.sleep(300)  # 5 minutes
+                
+            except KeyboardInterrupt:
+                print("\n🛑 Bot stopped by user")
+                break
+            except Exception as e:
+                print(f"❌ Bot error: {e}")
+                time.sleep(60)
+
+# 🔑 Configuration and Initialization
+if __name__ == "__main__":
+    # API Keys (Replace with your actual keys)
+    BINANCE_API_KEY = "your_binance_api_key_here"
+    BINANCE_SECRET_KEY = "your_binance_secret_key_here" 
+    DEEPSEEK_API_KEY = "your_deepseek_api_key_here"
+    
+    # Create and run bot
+    bot = DeepSeekTradingBot(
+        binance_api_key=BINANCE_API_KEY,
+        binance_secret_key=BINANCE_SECRET_KEY,
+        deepseek_api_key=DEEPSEEK_API_KEY
+    )
+    
+    # Start trading
+    bot.run_bot()
