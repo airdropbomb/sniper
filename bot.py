@@ -424,7 +424,7 @@ class MultiPairScalpingTrader:
         return market_data
     
     def get_scalping_decision(self, market_data):
-        """Scalping-optimized AI decision"""
+        """Scalping-optimized AI decision for both LONG and SHORT"""
         pair = list(market_data.keys())[0]
         data = market_data[pair]
         price = data['price']
@@ -440,14 +440,21 @@ class MultiPairScalpingTrader:
         - Volatility: {data.get('volatility', 0):.2f}%
         - 1H Range: ${data.get('low_1h', price):.2f} - ${data.get('high_1h', price):.2f}
         
-        SCALPING STRATEGY (0.5-1% targets):
-        - Look for immediate momentum opportunities
-        - 5-30 minute holds maximum
-        - Tight stop losses (0.5%)
-        - Quick take profits (0.8%)
-        - High frequency opportunities
+        SCALPING STRATEGY - BOTH LONG & SHORT:
+        LONG opportunities:
+        - Price near support levels ({data.get('low_1h', price):.2f})
+        - Oversold conditions (recent dip)
+        - Positive momentum reversal
+        - High volume buying
+        
+        SHORT opportunities:  
+        - Price near resistance levels ({data.get('high_1h', price):.2f})
+        - Overbought conditions (recent pump)
+        - Negative momentum reversal  
+        - High volume selling
         
         Analyze for IMMEDIATE scalping entry within next 1-5 candles.
+        Recommend SHORT if bearish signals are stronger than bullish.
         
         RESPONSE (JSON only):
         {{
@@ -460,7 +467,7 @@ class MultiPairScalpingTrader:
             "position_size_usd": {self.trade_size_usd},
             "confidence": 0-100,
             "timeframe": "5-30min",
-            "reason": "Specific technical/scalping reason...",
+            "reason": "Specific LONG/SHORT technical reason...",
             "urgency": "high/medium/low"
         }}
         """
@@ -506,7 +513,7 @@ class MultiPairScalpingTrader:
         return self.get_scalping_fallback(market_data)
     
     def get_scalping_fallback(self, market_data):
-        """Scalping fallback logic"""
+        """Scalping fallback logic with both LONG and SHORT"""
         pair = list(market_data.keys())[0]
         data = market_data[pair]
         price = data['price']
@@ -515,7 +522,7 @@ class MultiPairScalpingTrader:
         
         # More sensitive scalping triggers for auto-trading
         if abs(change_1h) > 0.2 or volatility > 0.5:
-            if change_1h < -0.1:
+            if change_1h < -0.1:  # Recent dip - LONG opportunity
                 return {
                     "action": "TRADE",
                     "pair": pair,
@@ -529,7 +536,7 @@ class MultiPairScalpingTrader:
                     "reason": f"Quick bounce scalping: {pair} dipped {change_1h:.2f}%",
                     "urgency": "high"
                 }
-            elif change_1h > 0.1:
+            elif change_1h > 0.1:  # Recent pump - SHORT opportunity
                 return {
                     "action": "TRADE",
                     "pair": pair,
@@ -540,27 +547,44 @@ class MultiPairScalpingTrader:
                     "position_size_usd": self.trade_size_usd,
                     "confidence": 65,
                     "timeframe": "10-20min",
-                    "reason": f"Pullback scalping: {pair} rose {change_1h:.2f}%",
+                    "reason": f"Pullback scalping: {pair} rose {change_1h:.2f}%, expecting retracement",
                     "urgency": "high"
                 }
         
-        # Random scalping in high volatility
+        # Random scalping in high volatility - both directions
         import random
         if volatility > 0.8 and random.random() > 0.6:
             direction = "LONG" if random.random() > 0.5 else "SHORT"
-            return {
-                "action": "TRADE",
-                "pair": pair,
-                "direction": direction,
-                "entry_price": price,
-                "stop_loss": round(price * (1 - self.scalp_stop_loss), 4),
-                "take_profit": round(price * (1 + self.scalp_take_profit), 4),
-                "position_size_usd": self.trade_size_usd,
-                "confidence": 60,
-                "timeframe": "5-15min",
-                "reason": f"Volatility scalping: {pair} has {volatility:.2f}% volatility",
-                "urgency": "medium"
-            }
+            reason = f"Volatility scalping: {pair} has {volatility:.2f}% volatility"
+            
+            if direction == "LONG":
+                return {
+                    "action": "TRADE",
+                    "pair": pair,
+                    "direction": direction,
+                    "entry_price": price,
+                    "stop_loss": round(price * (1 - self.scalp_stop_loss), 4),
+                    "take_profit": round(price * (1 + self.scalp_take_profit), 4),
+                    "position_size_usd": self.trade_size_usd,
+                    "confidence": 60,
+                    "timeframe": "5-15min",
+                    "reason": reason,
+                    "urgency": "medium"
+                }
+            else:
+                return {
+                    "action": "TRADE",
+                    "pair": pair,
+                    "direction": direction,
+                    "entry_price": price,
+                    "stop_loss": round(price * (1 + self.scalp_stop_loss), 4),
+                    "take_profit": round(price * (1 - self.scalp_take_profit), 4),
+                    "position_size_usd": self.trade_size_usd,
+                    "confidence": 60,
+                    "timeframe": "5-15min",
+                    "reason": reason,
+                    "urgency": "medium"
+                }
         
         return {
             "action": "SKIP", 
@@ -569,10 +593,12 @@ class MultiPairScalpingTrader:
         }
 
     def execute_scalping_trade(self, decision):
-        """Fixed version with proper quantity precision handling"""
+        """Fixed version with proper SHORT trading support"""
         try:
             pair = decision["pair"]
             direction = decision["direction"]
+            
+            print(f"🎯 TRADE DIRECTION: {direction}")  # DEBUG
             
             # Check if we can open new trade
             if len(self.active_trades) >= self.max_concurrent_trades:
@@ -592,9 +618,9 @@ class MultiPairScalpingTrader:
             # Calculate quantity with proper precision
             quantity = self.get_quantity(pair, current_price)
             
-            print(f"⚡ EXECUTING: {direction} {quantity} {pair} @ ${current_price}")
+            print(f"⚡ EXECUTING {direction}: {quantity} {pair} @ ${current_price}")
             
-            # MARKET ENTRY
+            # MARKET ENTRY - PROPERLY HANDLES BOTH LONG AND SHORT
             if direction == "LONG":
                 order = self.binance.futures_create_order(
                     symbol=pair,
@@ -603,33 +629,34 @@ class MultiPairScalpingTrader:
                     quantity=quantity
                 )
                 actual_entry = float(order['avgPrice'])
-            else:
+                print(f"✅ LONG ENTRY: ${actual_entry}")
+            else:  # SHORT
                 order = self.binance.futures_create_order(
                     symbol=pair,
-                    side='SELL',
+                    side='SELL',  # SHORT is SELL first
                     type='MARKET',
                     quantity=quantity
                 )
                 actual_entry = float(order['avgPrice'])
+                print(f"✅ SHORT ENTRY: ${actual_entry}")
             
-            print(f"✅ ENTRY SUCCESS: ${actual_entry}")
-            
-            # Calculate TP/SL with validation
+            # Calculate TP/SL with validation - CORRECT FOR BOTH DIRECTIONS
             if direction == "LONG":
                 stop_loss = actual_entry * (1 - self.scalp_stop_loss)
                 take_profit = actual_entry * (1 + self.scalp_take_profit)
-            else:
+                print(f"🎯 LONG: TP=${take_profit:.4f}, SL=${stop_loss:.4f}")
+            else:  # SHORT
                 stop_loss = actual_entry * (1 + self.scalp_stop_loss)
                 take_profit = actual_entry * (1 - self.scalp_take_profit)
+                print(f"🎯 SHORT: TP=${take_profit:.4f}, SL=${stop_loss:.4f}")
             
             # Ensure positive prices and proper rounding
-            stop_loss = max(0.01, round(stop_loss, 2))
-            take_profit = max(0.01, round(take_profit, 2))
+            stop_loss = max(0.01, round(stop_loss, 4))
+            take_profit = max(0.01, round(take_profit, 4))
             
-            print(f"🎯 TP: ${take_profit}, SL: ${stop_loss}")
-            
-            # Place TP/SL orders
+            # Place TP/SL orders - CORRECT FOR BOTH DIRECTIONS
             if direction == "LONG":
+                # LONG position: SELL to close for both TP and SL
                 # STOP LOSS
                 self.binance.futures_create_order(
                     symbol=pair,
@@ -650,7 +677,8 @@ class MultiPairScalpingTrader:
                     timeInForce='GTC',
                     reduceOnly=True
                 )
-            else:
+            else:  # SHORT
+                # SHORT position: BUY to close for both TP and SL
                 # STOP LOSS
                 self.binance.futures_create_order(
                     symbol=pair,
@@ -684,11 +712,11 @@ class MultiPairScalpingTrader:
                 "confidence": decision["confidence"]
             }
             
-            print(f"🚀 TRADE #{len(self.active_trades)} ACTIVATED!")
+            print(f"🚀 {direction} TRADE ACTIVATED!")
             print(f"   Active Trades: {list(self.active_trades.keys())}")
             
         except Exception as e:
-            print(f"❌ Trade execution failed: {e}")
+            print(f"❌ {direction} trade execution failed: {e}")
             import traceback
             traceback.print_exc()
 
