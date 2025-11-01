@@ -221,7 +221,7 @@ class ScalpingFutureTrader:
         }
 
     def execute_scalping_trade(self, decision):
-    """Execute scalping trade - FIXED VERSION"""
+    
     try:
         pair = decision["pair"]
         direction = decision["direction"]
