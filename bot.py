@@ -25,7 +25,7 @@ class FullyAutonomousFutureTrader:
         # Initialize Binance client
         self.binance = Client(self.binance_api_key, self.binance_secret)
         
-        self.available_pairs = ["BTCUSDT", "ETHUSDT", "SOLUSDT", "ADAUSDT"]  # Added BTC back
+        self.available_pairs = ["ETHUSDT", "SOLUSDT", "ADAUSDT"]  # Added BTC back
         self.active_trade = None
         
         # Validate that all required keys are present
