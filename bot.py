@@ -221,107 +221,105 @@ class ScalpingFutureTrader:
         }
 
     def execute_scalping_trade(self, decision):
-    
-    try:
-        pair = decision["pair"]
-        direction = decision["direction"]
-        
-        # Get current price
-        ticker = self.binance.futures_symbol_ticker(symbol=pair)
-        current_price = float(ticker['price'])
-        
-        # Calculate quantity
-        quantity = self.trade_size_usd / current_price
-        if pair == "ADAUSDT":
-            quantity = int(quantity)
-        else:
-            quantity = round(quantity, 3)
-        
-        print(f"⚡ SCALPING EXECUTION:")
-        print(f"   {direction} {quantity} {pair} @ Market")
-        
-        # MARKET ENTRY
-        if direction == "LONG":
-            entry_order = self.binance.futures_create_order(
-                symbol=pair,
-                side='BUY',
-                type='MARKET',
-                quantity=quantity
-                # ❌ timeInForce not needed for MARKET orders
-            )
-            actual_entry = float(entry_order['avgPrice'])
-        else:
-            entry_order = self.binance.futures_create_order(
-                symbol=pair,
-                side='SELL', 
-                type='MARKET',
-                quantity=quantity
-                # ❌ timeInForce not needed for MARKET orders
-            )
-            actual_entry = float(entry_order['avgPrice'])
-        
-        print(f"✅ ENTRY: {actual_entry}")
-        
-        # TP/SL orders - FIX timeInForce
-        stop_loss = decision["stop_loss"]
-        take_profit = decision["take_profit"]
-        
-        if direction == "LONG":
-            # STOP LOSS
-            self.binance.futures_create_order(
-                symbol=pair,
-                side='SELL',
-                type='STOP_MARKET',
-                quantity=quantity,
-                stopPrice=str(stop_loss),
-                timeInForce='GTC',  # ✅ ADD THIS
-                reduceOnly=True
-            )
-            # TAKE PROFIT
-            self.binance.futures_create_order(
-                symbol=pair,
-                side='SELL',
-                type='LIMIT',
-                quantity=quantity,
-                price=str(take_profit),
-                timeInForce='GTC',  # ✅ ADD THIS
-                reduceOnly=True
-            )
-        else:
-            # STOP LOSS
-            self.binance.futures_create_order(
-                symbol=pair,
-                side='BUY',
-                type='STOP_MARKET',
-                quantity=quantity,
-                stopPrice=str(stop_loss),
-                timeInForce='GTC',  # ✅ ADD THIS
-                reduceOnly=True
-            )
-            # TAKE PROFIT
-            self.binance.futures_create_order(
-                symbol=pair,
-                side='BUY',
-                type='LIMIT',
-                quantity=quantity,
-                price=str(take_profit),
-                timeInForce='GTC',  # ✅ ADD THIS
-                reduceOnly=True
-            )
-        
-        self.active_trade = {
-            "pair": pair,
-            "direction": direction,
-            "entry_price": actual_entry,
-            "quantity": quantity,
-            "entry_time": time.time()
-        }
-        
-        print(f"🎯 SCALPING TRADE ACTIVE!")
-        print(f"   SL: ${stop_loss}, TP: ${take_profit}")
-        
-    except Exception as e:
-        print(f"❌ Scalping trade failed: {e}")
+        """Execute scalping trade - FIXED INDENTATION"""
+        try:
+            pair = decision["pair"]
+            direction = decision["direction"]
+            
+            # Get current price
+            ticker = self.binance.futures_symbol_ticker(symbol=pair)
+            current_price = float(ticker['price'])
+            
+            # Calculate quantity
+            quantity = self.trade_size_usd / current_price
+            if pair == "ADAUSDT":
+                quantity = int(quantity)
+            else:
+                quantity = round(quantity, 3)
+            
+            print(f"⚡ SCALPING EXECUTION:")
+            print(f"   {direction} {quantity} {pair} @ Market")
+            
+            # MARKET ENTRY
+            if direction == "LONG":
+                entry_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='MARKET',
+                    quantity=quantity
+                )
+                actual_entry = float(entry_order['avgPrice'])
+            else:
+                entry_order = self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL', 
+                    type='MARKET',
+                    quantity=quantity
+                )
+                actual_entry = float(entry_order['avgPrice'])
+            
+            print(f"✅ ENTRY: {actual_entry}")
+            
+            # TP/SL orders - FIX timeInForce
+            stop_loss = decision["stop_loss"]
+            take_profit = decision["take_profit"]
+            
+            if direction == "LONG":
+                # STOP LOSS
+                self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(stop_loss),
+                    timeInForce='GTC',  # ✅ ADD THIS
+                    reduceOnly=True
+                )
+                # TAKE PROFIT
+                self.binance.futures_create_order(
+                    symbol=pair,
+                    side='SELL',
+                    type='LIMIT',
+                    quantity=quantity,
+                    price=str(take_profit),
+                    timeInForce='GTC',  # ✅ ADD THIS
+                    reduceOnly=True
+                )
+            else:
+                # STOP LOSS
+                self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='STOP_MARKET',
+                    quantity=quantity,
+                    stopPrice=str(stop_loss),
+                    timeInForce='GTC',  # ✅ ADD THIS
+                    reduceOnly=True
+                )
+                # TAKE PROFIT
+                self.binance.futures_create_order(
+                    symbol=pair,
+                    side='BUY',
+                    type='LIMIT',
+                    quantity=quantity,
+                    price=str(take_profit),
+                    timeInForce='GTC',  # ✅ ADD THIS
+                    reduceOnly=True
+                )
+            
+            self.active_trade = {
+                "pair": pair,
+                "direction": direction,
+                "entry_price": actual_entry,
+                "quantity": quantity,
+                "entry_time": time.time()
+            }
+            
+            print(f"🎯 SCALPING TRADE ACTIVE!")
+            print(f"   SL: ${stop_loss}, TP: ${take_profit}")
+            
+        except Exception as e:
+            print(f"❌ Scalping trade failed: {e}")
 
     def check_scalping_trade(self):
         """Check scalping trade status"""
